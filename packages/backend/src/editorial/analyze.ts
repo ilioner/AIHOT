@@ -18,9 +18,11 @@ import { SELECTION } from "@aihot/industry/selection";
 import { ITEM_COPY } from "@aihot/site";
 import { sql } from "../db.ts";
 import { chatJson, MODELS, type ContentPart } from "../providers/llm.ts";
+import { choiceDecision } from "../providers/systemone.ts";
+import { prefilterQuestions, scoreDecision } from "./decisions.ts";
 import { completeReceipt, failedReceiptId, failureKind } from "../providers/receipts.ts";
 import { collapseWhitespace } from "../lib/text.ts";
-import { modelFor, modelRoute, modelSupportsVision } from "./models.ts";
+import { CAPABILITIES, capabilityAcceptsModel, modelFor, modelRoute, modelSupportsVision } from "./models.ts";
 import { buildMaterial, firstImagePart, loadAnalyzeInput, type AnalyzeInputArticle } from "./input.ts";
 import { pageFetchable } from "../content/extract.ts";
 import { shutdownSignal } from "../jobs/queue.ts";
@@ -37,8 +39,8 @@ import { wordingProblems } from "./wording.ts";
 export { buildMaterial, loadAnalyzeInput, type AnalyzeInputArticle };
 
 export const PROMPT_VERSIONS = {
-  prefilter: promptVersion("prefilter"),
-  score: promptVersion("selection-score"),
+  prefilter: promptVersion("prefilter", "prefilter-decision"),
+  score: promptVersion("selection-score", "selection-score-decision"),
   understand: promptVersion("understand"),
   summarize: promptVersion("summarize-article", "summarize-article-empty", "summarize-short-post", "summarize-short-post-quoted", "summarize-long-post", "summarize-long-post-quoted", "identity-context"),
   structure: promptVersion("structure"),
@@ -86,7 +88,7 @@ export function scoreInputTime(at: Date): string {
  * The score input: no source facts (the prompt forbids guessing them), the publication time, the
  * original title (items are scored before any Chinese copy exists) and the whole body.
  */
-export function buildScoreInput(a: AnalyzeInputArticle): string {
+export function buildScoreInput(a: AnalyzeInputArticle, decision = false): string {
   let body: string;
   if (a.xPost) {
     const quoted = a.xPost.quoted?.text ? `\n\n[引用 ${a.xPost.quoted.handle ? `@${a.xPost.quoted.handle}` : "原推文"}]：${a.xPost.quoted.text}` : "";
@@ -97,7 +99,7 @@ export function buildScoreInput(a: AnalyzeInputArticle): string {
   if (!body) body = a.title;
   const at = a.publishedAt;
   return [
-    "请按系统规则评估以下单篇材料所代表的事件。只输出 attentionScore。",
+    ...(decision ? [] : ["请按系统规则评估以下单篇材料所代表的事件。只输出 attentionScore。"]),
     `【发布时间（北京时间）】\n${at ? a.publicationTime === undefined || a.publicationTime?.includes("T") ? scoreInputTime(at) : describePublicationTime(at, a.publicationTime) : "未知（收录时间不代表发布时间）"}`,
     `【标题】\n${a.title.trim()}`,
     `【完整正文】\n${body.length > MAX_BODY_CHARS ? body.slice(0, MAX_BODY_CHARS) : body}`,
@@ -231,7 +233,11 @@ const tagged = (attemptTag: string | undefined, step: string) => [attemptTag, st
 async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<NonNullable<AnalysisRun["prefilter"]>> {
   const model = await modelFor("prefilter");
   checkAnalysisRunning();
-  const res = await chatJson({
+  const res = MODELS[model]?.protocol === "systemone" ? await choiceDecision({
+    model, purpose: "prefilter_article", subject: subjectOf(a), promptVersion: PROMPT_VERSIONS.prefilter,
+    state: JSON.parse(prefilterUser(a)) as Record<string, unknown>, questions: prefilterQuestions(), schema: PrefilterSchema,
+    parse: choices => ({ label: choices.label, reason: "" }), attemptTag: opts.attemptTag,
+  }) : await chatJson({
     model,
     purpose: "prefilter_article",
     subject: subjectOf(a),
@@ -272,8 +278,11 @@ async function runScores(
   onReceipt?: ReceiptObserver,
 ): Promise<NonNullable<AnalysisRun["scores"]>> {
   const model = opts.scoreModel ?? (await modelFor("score"));
+  const spec = MODELS[model];
+  if (!spec || !capabilityAcceptsModel(CAPABILITIES.score, spec)) throw new Error(`Model ${model} cannot score articles`);
   const call = scoreCall(model);
-  const input = buildScoreInput(a);
+  const decision = spec.protocol === "systemone" ? scoreDecision() : null;
+  const input = buildScoreInput(a, decision !== null);
   const values: number[] = [];
   const receiptIds: number[] = [];
   let reused = true;
@@ -281,7 +290,11 @@ async function runScores(
   for (let i = 0; i < SCORE_CALLS; i++) {
     checkAnalysisRunning();
     try {
-      const res = await chatJson({
+      const res = decision ? await choiceDecision({
+        model, purpose: "score_article", subject: subjectOf(a), promptVersion: PROMPT_VERSIONS.score,
+        state: { rules: decision.rules, material: input }, questions: decision.questions, parse: decision.parse, schema: ScoreSchema,
+        timeoutMs: call.timeoutMs, attemptTag: tagged(opts.attemptTag, `score-${i + 1}`),
+      }) : await chatJson({
         model, purpose: "score_article", subject: subjectOf(a), promptVersion: PROMPT_VERSIONS.score, system: SCORE_SYSTEM, user: input,
         schema: ScoreSchema, temperature: call.temperature, maxTokens: call.maxTokens, timeoutMs: call.timeoutMs,
         // Each call is its own paid request; an explicit re-evaluation gets new ones.

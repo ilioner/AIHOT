@@ -14,6 +14,7 @@ const TEMPLATES: Record<string, Record<string, unknown>> = {
   rss: { feedUrl: "https://example.com/feed.xml" },
   web_list: { url: "https://example.com/blog", baseUrl: "https://example.com", itemSelector: "article", linkSelector: "a", titleSelector: "h2", allowUrlPrefixes: ["https://example.com/blog/"] },
   json_list: { url: "https://example.com/api/posts", mode: "json_api", method: "GET", itemsPath: "data.items", titlePaths: ["title"], urlTemplate: "{raw:url}", summaryPaths: ["summary"] },
+  web_search: { query: "关键词", lang: "zh-CN", region: "CN", limit: 10 },
   x_search: { query: "from:handle -filter:replies", searchType: "Latest" },
   mp_account: { ghid: "gh_", nickname: "" },
   external: {},

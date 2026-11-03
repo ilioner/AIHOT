@@ -1,1 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="116" fill="#13191c"/><path d="M256 92C271 199 313 241 420 256C313 271 271 313 256 420C241 313 199 271 92 256C199 241 241 199 256 92Z" fill="#2ce2e8"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">职教雷达：雷达与书页</title>
+  <rect width="512" height="512" rx="116" fill="#102f36"/>
+  <g fill="none" stroke="#42d6b3" stroke-width="16" stroke-linecap="round">
+    <path d="M124 248a132 132 0 0 1 264 0"/>
+    <path d="M180 248a76 76 0 0 1 152 0"/>
+    <path d="M256 248l94-94"/>
+  </g>
+  <circle cx="350" cy="154" r="17" fill="#42d6b3"/>
+  <g fill="#f4faf7">
+    <path d="M132 268q64-20 116 14v96q-52-34-116-14Z"/>
+    <path d="M264 282q52-34 116-14v96q-64-20-116 14Z"/>
+  </g>
+</svg>

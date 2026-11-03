@@ -19,7 +19,8 @@ test("a publication boundary rejects missing zones, incomplete and impossible da
 });
 
 test("channels that do not apply the publication boundary refuse it instead of ignoring it", () => {
-  for (const kind of ["x_search", "mp_account", "external"] as const) {
+  // A paid search has no date until its pages are read, so a boundary would drop every result silently.
+  for (const kind of ["web_search", "x_search", "mp_account", "external"] as const) {
     assert.deepEqual(unsupportedConfig(kind, { publishedAfter: "2026-09-28T00:00:00Z" }), ["publishedAfter"]);
   }
 });

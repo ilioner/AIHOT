@@ -51,7 +51,7 @@ async function report(text: string, scope = "single", selected = true) {
   const { articleId } = await upsertMaterial({ sourceId, url: `https://example.org/value/${randomUUID()}`, title: text,
     bodyText: text, bodyStatus: "ok", via: "fetch", publishedAt: new Date() });
   await sql`INSERT INTO analyses(article_id,input_revision,origin,relevance,title_zh,summary_zh,category,score,selected,output)
-    VALUES(${articleId},1,'rule','pass',${text},${text},'ai-products',80,${selected},${sql.json({ scope, fact: scope === "composite" ? null : { title: text, subject: text, action: "发布", object: text } })})`;
+    VALUES(${articleId},1,'rule','pass',${text},${text},'ai-teaching',80,${selected},${sql.json({ scope, fact: scope === "composite" ? null : { title: text, subject: text, action: "发布", object: text } })})`;
   await publishArticle(articleId);
   return articleId;
 }
@@ -153,7 +153,7 @@ test("a material revision rechecks value in the same batch while keeping its con
     await upsertMaterial({ sourceId, url: article!.url, title: revised, bodyText: revised,
       bodyStatus: "ok", via: "fetch", publishedAt: article!.published_at });
     await sql`INSERT INTO analyses(article_id,input_revision,origin,relevance,title_zh,summary_zh,category,score,selected,output)
-      VALUES(${id},${revision},'rule','pass',${revised},${revised},'ai-products',80,true,
+      VALUES(${id},${revision},'rule','pass',${revised},${revised},'ai-teaching',80,true,
         ${sql.json({ scope: "single", fact: { title: revised, subject: text, action: "介绍", object: text } })})`;
     assert.deepEqual([(await state(id)).grouping_status,(await state(id)).selected], ["pending",false]);
     selection = { addsValue, reason: addsValue ? "补充了新测量结果" : "仅措辞变化" };
@@ -186,7 +186,7 @@ test("an independent evaluation remains selected as a new fact", async () => {
   const id = await report(text + "新评测");
   // Failure mode: a short generated summary omits the source's independent new evidence, so the
   // existing batch can never assess it. Assert the stored input reaches that actual provider call.
-  const sourceEvidence = `${text} 的原文实测：Sticky Sessions 保留会话状态，Endpoint Candidates 分阶段验证新端点。`;
+  const sourceEvidence = `${text} 的原文实测：AI 实训平台保留学习会话状态，技能测评工具分阶段验证新实训任务。`;
   await sql`UPDATE articles SET body_text=${sourceEvidence} WHERE id=${id}`;
   const result = await groupArticle(id);
   assert.notEqual(result.factId, first.result.factId);

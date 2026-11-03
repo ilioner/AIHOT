@@ -62,6 +62,10 @@ MCP 默认接受 `SITE_URL` 的主机以及 `localhost`、`127.0.0.1`、`[::1]`�
 
 ### 更新
 
+#### System One 决策适配（2026 年 10 月 30 日，本机定制）
+
+新增选填的 `SYSTEMONE_BASE_URL`、`SYSTEMONE_API_KEY`，仅供 `decision-model-preview` 的预筛与评分；生成式步骤保留原配置。未选择该预设时仍走 chat，不自动开启采集或模型调用，没有迁移、不删除数据，也不批量重判历史文章。预筛/评分规则拆到 `prefilter-rules.md`、`selection-score-rules.md`，原文件继续通过片段引用；提示词版本随片段改变，正在恢复的任务不能误用旧规则的回执。自己维护行业提示词的站需一并带上新增的决策模板和共享规则，数值与判断标准应核对自己的原配置；配置与评测见 [改站指南](customize.md#systemone-决策模型可选)。
+
 新增选填的 `PRIVATE_FEED_HOSTS`：信源订阅或列表地址用自建在内网的服务（比如 RSSHub）时，把它的主机名写进去，不必再打开整站的 `ALLOW_PRIVATE_NETWORK_FETCH`，用法见 [信源](sources.md)。不设置时行为不变；无需数据库迁移。
 
 周报、月报的周期内，应有日报齐全且原始正文条目全部为空时，自动跳过该期，避免每半小时重复报错；归档里不会新增空周报或月报。首个周期从全站最早日报开始检查；没有可汇总条目时，若缺失日报、原有条目后来无法公开或正在人工更正，仍保留原有错误。无需数据库迁移或配置修改，升级后下次定时检查生效。
@@ -84,6 +88,45 @@ docker compose run --rm setup && docker compose up -d
 新迁移遇到长期占锁会报出文件名和等待超时，先处理占锁事务，再重跑 setup，不要跳过迁移或改写迁移账本。并发索引创建中断可能留下无效索引：核实报错中的对象后，用 `DROP INDEX CONCURRENTLY <索引名>` 清理该失败索引再重跑；有效但定义不同的同名索引须先核对差异。这些保护不改变上述 Docker 更新顺序，跨旧版本升级仍可能执行历史上的破坏性迁移。
 
 下面按时间从新到旧列出每次更新要注意的事。
+
+#### 政策、职教与 AI 媒体信源（2026 年 11 月 2 日，本机定制）
+
+新增 10 条信源（`industry/sources.json`）：教育部政府门户 · 新闻发布、教育部 · 教育信息化政策文件、中国政府网 · 政策最新（以上 `T1`），中文 AI 媒体三条（量子位、36 氪、AIbase · AI 资讯），教程与厂商四条（阿里云开发者社区 · 文章推荐、腾讯云开发者社区 · 首页推荐、智谱 AI 开放平台 · 模型与产品发布记录、月之暗面 Kimi · 研究博客）（以上 `T2`）。没有数据库迁移；信源行由 `scripts/seed.ts` 写入，所以**非 Docker 部署更新后要跑一次 `node --env-file=.env scripts/seed.ts`**（Docker 的 `setup` 已含这一步）。seed 对已有信源是 `ON CONFLICT (id) DO NOTHING`，你在后台改过的名字、分级和频率不会被覆盖；新信源默认开启并按各自周期开始采集，首次导入每源最多 8 条（智谱发布记录为 1 条）。
+
+同一批还**改了两条已有信源的名字**：`weblist-chinazy-news`、`weblist-chinazy-policy` 由「中国职业教育与成人教育网」改为**「中国职业技术教育网」**（chinazy.org 的首页站名，原名是另一家的站名）。`ON CONFLICT DO NOTHING` 不会覆盖库里已有的行，**非 Docker 部署要在后台「信源」里手工改这两条的名字**，或执行 `UPDATE sources SET name = CASE id WHEN 'weblist-chinazy-news' THEN '中国职业技术教育网 · 新闻资讯' ELSE '中国职业技术教育网 · 政策法规' END WHERE id IN ('weblist-chinazy-news', 'weblist-chinazy-policy');`。
+
+职教垂直层这一轮**没有新增**：中国职业教育与成人教育网（cvae.com.cn）、国家职业教育智慧教育平台、智慧职教 iCVE、国家智慧教育平台当前都没有公开可抓的资讯列表——前三者的资讯接口是页面里脚本发出的加密请求，cvae 的明文接口又因为它的证书链 Node 验不过（要装 CA 才能读）；国家智慧教育平台的新闻服务是 IP 白名单，直接 403。要收这些站点得先给采集加请求体加密或渲染读取的能力，不是配置文件能解决的。
+
+**这一次的更新会删掉已有的数据**：两条“中国教育在线”示范信源（`json-eol-vocational-news`、`json-eol-school-news`）连同它们已采集的 29 篇文章、29 条已发布记录和 7 个只剩它们的组一起删除。后台没有删除信源的入口，也不会有迁移替你删——升级只删掉 `industry/sources.json` 里的配置，库里已有的行要自己按[备份](#备份)一节备份后执行下面的 SQL（在一个事务里按外键顺序删除，并清掉会因此变空的 `facts`/`stories` 和没有外键的 `article_discoveries` 登记行）：
+
+```sql
+BEGIN;
+CREATE TEMP TABLE doomed AS SELECT id FROM articles
+  WHERE source_id IN ('json-eol-vocational-news', 'json-eol-school-news');
+CREATE TEMP TABLE empty_facts AS SELECT f.id, f.story_id FROM facts f WHERE NOT EXISTS
+  (SELECT 1 FROM fact_articles fa WHERE fa.fact_id = f.id AND fa.article_id NOT IN (SELECT id FROM doomed));
+DELETE FROM fact_articles WHERE fact_id IN (SELECT id FROM empty_facts);
+DELETE FROM facts WHERE id IN (SELECT id FROM empty_facts);
+DELETE FROM story_aliases WHERE story_id IN (SELECT story_id FROM empty_facts WHERE story_id IS NOT NULL);
+DELETE FROM stories s WHERE s.id IN (SELECT story_id FROM empty_facts WHERE story_id IS NOT NULL)
+  AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.story_id = s.id)
+  AND NOT EXISTS (SELECT 1 FROM stories m WHERE m.merged_into = s.id);
+DELETE FROM articles WHERE id IN (SELECT id FROM doomed);
+DELETE FROM article_discoveries WHERE source_id LIKE 'json-eol-%';
+DELETE FROM fetch_runs WHERE source_id LIKE 'json-eol-%';
+DELETE FROM sources WHERE id LIKE 'json-eol-%';
+COMMIT;
+```
+
+不执行时，配置里删掉的那两条信源仍留在库里，后台还能看到并继续采集；想保留它们的历史文章，就在后台把两条信源停用，别执行这段。
+
+中国政府网那条读的是页面背后公开的 JSON（`/zhengce/zuixin/ZUIXINZHENGCE.json`），因为列表页是脚本渲染；该站政策以综合政策为主，AI 与教育的条目占比不高，靠评分门槛筛。教育部新闻发布的列表只有“月-日”，发布时间由原文页补，因此首轮会有几条先无日期，之后按周期补齐。AIbase 的列表页同样只有相对时间，前 8 条的发布时间按原文页补，其余按周期补齐；阿里云和腾讯云两条读的是开发者社区的首页推荐，属于推荐流（会混入与 AI 无关的旧文），也靠评分门槛筛。
+
+#### 网页搜索信源与教指委官网（2026 年 11 月 2 日，本机定制）
+
+新增信源类型 `web_search`（Fathom 网页检索，按请求计费，每个查询按天采集一次）和一个网页列表信源“教育部职业院校信息化教学指导委员会 · 通知公告”。三个迁移只放宽 `sources.kind` 的取值——`0090_sources_kind_web_search_drop.sql` 删除旧约束、`0091_…_add.sql` 以 `NOT VALID` 加新约束（对新行立即生效）、`0092_…_validate.sql` 校验——不动已有数据。
+
+新增选填的 `FATHOM_API_KEY`（填在后端 `.env`，只走付费回执和预算，不写进信源配置）。`fathom` 的默认付费上限（每分钟 5 / 每小时 10 / 每天 12）由 `scripts/seed.ts` 写入：从 0055 起在线迁移不接受 INSERT，所以**非 Docker 部署更新后要跑一次 `node --env-file=.env scripts/seed.ts`**（Docker 的 `setup` 已含这一步），或在后台“设置 → 付费请求上限”手工加一条 `fathom`；不加该服务就不限额。`scripts/seed.ts` 对已有信源是 `ON CONFLICT (id) DO NOTHING`，对已有预算行是 `ON CONFLICT (service) DO NOTHING`，都不会覆盖你在后台改过的设置。
 
 日报缺期告警按北京时间的具体日期跟踪，跨午夜不会自动恢复；只有对应日报存在才发恢复通知。新缺期检查最近 7 个日历日（含今天），不早于最早的日报或 reports.compose 运行记录；没有历史记录时只检查今天。已告警的日期在这 7 天里一直跟踪，关闭采集/模型或 worker 启动宽限期也不会把缺期当成恢复；超出 7 天仍没有日报的，发一条“没能补出、停止提醒”后不再提醒。旧的 report.daily 状态自动按首次告警时间迁移，保留提醒间隔。出刊后两小时告警、每小时提醒及飞书开关保持不变；无需数据库迁移。自定义 responder 若按旧 `report.daily` 精确匹配，需改为识别 `report.daily:YYYY-MM-DD` 日期键。
 
@@ -243,7 +286,7 @@ docker compose logs -f --tail 100 api worker web
 ## 花多少钱
 
 - **模型**：每条新资料先预筛一次；过了预筛的再评两次分、做一次结构化、写一次标题摘要，然后归组（有相近的报道时才调用），另外还有事件综述、周报月报的总述和精选的全文翻译。空正文、纯链接的 X 帖子不调用写作或翻译模型。日报按规则编排，不调用模型。我们用示范信源在本地试跑，第一次导入的 152 条资料一共用了大约 930 次模型调用。之后每天用多少，取决于你的信源每天更新多少条。后台“模型与评测”页能看到每一步的调用次数和输入输出 token 数。
-- **付费采集**（X、公众号、Jina）：按请求计费，默认不启用，填了 key 才会用。
+- **付费采集**（网页搜索、X、公众号、Jina）：按请求计费，默认不启用，填了 key 才会用。
 - 所有付费服务都有每分钟、每小时、每天的调用上限（后台“设置 → 付费请求上限”），超过就暂停，不会一夜之间刷爆账单。填 0 表示立即停用这个服务。
 
 ## 不用 Docker

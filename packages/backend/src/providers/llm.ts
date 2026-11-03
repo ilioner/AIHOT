@@ -110,7 +110,7 @@ export function escapeControlCharsInStrings(json: string): string {
   return out;
 }
 
-function isConnectFailure(error: unknown): boolean {
+export function isConnectFailure(error: unknown): boolean {
   const code = (error as { cause?: { code?: string } })?.cause?.code ?? (error as { code?: string })?.code;
   return ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "UND_ERR_CONNECT_TIMEOUT", "CERT_HAS_EXPIRED"].includes(code ?? "");
 }
@@ -163,6 +163,9 @@ export async function chatJson<S extends z.ZodType>(opts: ChatJsonOptions<S>): P
 async function chatOnce<S extends z.ZodType>(opts: ChatJsonOptions<S>, circuit = false, fallbackFor?: string): Promise<ChatJsonResult<z.infer<S>>> {
   const spec = MODELS[opts.model];
   if (!spec) throw new Error(`Unknown model ${opts.model}`);
+  if (spec.protocol === "systemone" || (spec.key === "default" && Object.values(PRESETS).some(preset => preset.protocol === "systemone" && preset.model === spec.model))) {
+    throw new ModelUnavailableError(`Model ${opts.model} supports decisions, not chat; choose its preset for PREFILTER_MODEL or SCORE_MODEL`);
+  }
   if (!config.modelCallsEnabled) throw new ModelUnavailableError("Model calls are disabled (MODEL_CALLS_ENABLED=false)");
   const baseUrl = credential("models", spec.baseUrlEnv);
   const apiKey = credential("models", spec.apiKeyEnv);

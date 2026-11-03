@@ -68,7 +68,7 @@
 
 | 字段 | 含义 |
 |---|---|
-| `kind` | `rss`、`web_list`（网页列表，配选择器）、`json_list`（JSON 接口）、`x_search`（X 账号，需要 SocialData）、`mp_account`（公众号，需要极致了）、`external`（外部推送） |
+| `kind` | `rss`、`web_list`（网页列表，配选择器）、`json_list`（JSON 接口）、`web_search`（网页搜索，配关键词，需要 Fathom）、`x_search`（X 账号，需要 SocialData）、`mp_account`（公众号，需要极致了）、`external`（外部推送） |
 | `config` | 每种信源的配置，见 [信源](sources.md) |
 | `tier` | 信源分级：`T1` 官方一手、`T1_5` 官方账号与准官方、`T2` 媒体与个人、`EXCLUDE_MP` 不参与精选。不同分级的入选门槛不同。`T1` 就是“一手”，不用另外标 |
 | `owner_entity_id` | 可选，这个信源属于哪家公司（`ENTITIES` 的 id）。同一家公司的几个信源在热度里只算一个参与方；`T1_5` 的官方账号要当代表报道，也要填它（见 [信源](sources.md)） |
@@ -138,6 +138,21 @@
 
 - 模型：`.env` 里的 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`，任何 OpenAI 兼容接口都行，所有步骤默认都用它。`site/models.ts` 列出具名的模型（各用自己的地址和密钥环境变量）和每一步默认用哪个；部署时还可以用环境变量（见 `.env.example`）或后台“模型与评测”页逐步改选。用推理模型（先想再答）时给它留出推理的额度：默认模型设 `LLM_REASONING_TOKENS`，具名模型在 `site/models.ts` 里写 `reasoningTokens`；不留的话推理会把每一步的输出额度用光，答案为空，每次调用都失败。 评分预设还可写 `scoreCall: { temperature, maxTokens, timeoutMs }`，分别控制温度、输出额度和超时毫秒；示例评分预设已明确配置这些值。备用模型的 `fallbackFor` 按能力名指定它接替的主模型，须先用自己的资料评测这组组合；示例站默认没有备用组合。
 - 部署：见 [部署](deploy.md)。
+
+### SystemOne 决策模型（可选）
+
+`site/models.ts` 的 `decision-model-preview` 预设声明 `protocol: "systemone"`，只可用于精选预筛（`PREFILTER_MODEL`）和精选评分（`SCORE_MODEL`）。未声明协议的预设仍用 `chat`。后台也只在这两个步骤列出它；写作、结构抽取、归组、综述和翻译等步骤不能使用它，**也不能把 `decision-model-preview` 填进通用 `LLM_MODEL`**。保留 `DEFAULTS` 为空和原来的生成式模型，下面两项按需设置：
+
+```dotenv
+PREFILTER_MODEL=decision-model-preview
+SCORE_MODEL=decision-model-preview
+SYSTEMONE_BASE_URL=https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+SYSTEMONE_API_KEY=<该工作空间的 API Key>
+```
+
+把 `WorkspaceId` 换成自己的百炼工作空间 ID。后端在这个基础地址后追加 `/systemone`，完整端点为 `https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/systemone`，不是 `/chat/completions`。新加坡工作空间用 `https://<WorkspaceId>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`；地址、工作空间与 key 的地域须对应。`SYSTEMONE_API_KEY` 独立于 `DASHSCOPE_API_KEY`，只填写它不会隐式启用归组的付费 embeddings。
+
+它返回候选决策与分数，不生成解释文字；预筛不补写或伪造理由。原始 `answers`（含 choice 与概率）及 `usage` 存在回执中，运维可按后台内容诊断显示的回执编号核查。评分按既有内容类型、五个维度、权重和材料不足时的封顶规则计算，仍独立发出两次实际评分请求，不把一次结果复制成两次；既有门槛不因换协议而调整，详见 [精选与校准](selection.md#systemone-决策评分)。接入配置不代表已验证效果，也不承诺免费：需要使用者填写有效 key、确认后台 `dashscope` 预算后，再用自己的同批金标实测评测。
 
 ## 改完以后检查
 

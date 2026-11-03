@@ -53,6 +53,7 @@ const KIND_ORDER: Array<[string, string]> = [
   ["x_search", "X"],
   ["rss", "RSS"],
   ["web_list", "网页"],
+  ["web_search", "搜索"],
   ["mp_account", "公众号"],
   ["json_list", "接口"],
 ];

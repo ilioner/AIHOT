@@ -39,6 +39,10 @@ export const PRESETS: Record<string, ModelPreset> = {
     service: "mimo", model: "mimo-v2.6-flash", baseUrlEnv: "XIAOMI_MIMO_BASE_URL", apiKeyEnv: "XIAOMI_MIMO_API_KEY",
     extra: { thinking: { type: "disabled" } }, jsonMode: true,
   },
+  "decision-model-preview": {
+    service: "dashscope", model: "decision-model-preview", protocol: "systemone", baseUrlEnv: "SYSTEMONE_BASE_URL", apiKeyEnv: "SYSTEMONE_API_KEY",
+    jsonMode: false,
+  },
   "qwen3-vl-flash": {
     service: "dashscope", model: "qwen3-vl-flash", baseUrlEnv: "DASHSCOPE_BASE_URL", apiKeyEnv: "DASHSCOPE_API_KEY",
     extra: { enable_thinking: false }, jsonMode: false, vision: true,

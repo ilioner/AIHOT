@@ -2,6 +2,7 @@
 // own model), an environment override, and an admin switch kept in settings (every switch is audited).
 // Read at call time and cached for a minute, so a switch applies to the next call without a restart; a
 // changed model only affects work done from then on (history is not re-judged).
+import type { ModelPreset } from "@aihot/contracts/site-config";
 import { READER_WORDING } from "@aihot/industry/wording";
 import { DEFAULTS } from "@aihot/site/models";
 import { sql } from "../db.ts";
@@ -17,13 +18,15 @@ export interface Capability {
   purposes: string[];
   /** The step needs a model that reads images. */
   vision?: boolean;
+  /** The step supports a decision protocol instead of generated text. */
+  decision?: boolean;
   /** The step has nothing to do on this site, so a service's outage does not stop it. */
   idle?: () => boolean;
 }
 
 export const CAPABILITIES = {
-  prefilter: { label: "精选预筛（是否属于这个行业，宽召回）", env: "PREFILTER_MODEL", default: DEFAULTS.prefilter ?? "default", purposes: ["prefilter_article"] },
-  score: { label: "精选评分（两次独立评分，按信源分级门槛）", env: "SCORE_MODEL", default: DEFAULTS.score ?? "default", purposes: ["score_article"] },
+  prefilter: { label: "精选预筛（是否属于这个行业，宽召回）", env: "PREFILTER_MODEL", default: DEFAULTS.prefilter ?? "default", purposes: ["prefilter_article"], decision: true },
+  score: { label: "精选评分（两次独立评分，按信源分级门槛）", env: "SCORE_MODEL", default: DEFAULTS.score ?? "default", purposes: ["score_article"], decision: true },
   understand: { label: "内容理解（入选和接近入选的标题、摘要、推荐理由，能看图时看首图）", env: "UNDERSTAND_MODEL", default: DEFAULTS.understand ?? "default", purposes: ["understand_article"] },
   summarize: { label: "标题摘要（其余文章的中文标题与摘要）", env: "SUMMARIZE_MODEL", default: DEFAULTS.summarize ?? "default", purposes: ["summarize_article"] },
   wording: { label: "改用词（标题、摘要、理由用了本站不用的词时，只改这些词）", env: "WORDING_MODEL", default: DEFAULTS.wording ?? "default", purposes: ["mend_wording"], idle: () => !READER_WORDING.length },
@@ -80,9 +83,21 @@ export function modelSupportsVision(model: string): boolean {
   return MODELS[model]?.vision === true;
 }
 
-/** Whether a step can use a registered model. A model that reads images writes text as well. */
-export function capabilityAcceptsModel(capability: Capability, model: { vision?: boolean }): boolean {
-  return !capability.vision || model.vision === true;
+/** Whether a step supports the model's protocol and, when required, image input. */
+export function capabilityAcceptsModel(capability: Capability, model: Pick<ModelPreset, "vision" | "protocol">): boolean {
+  return (!capability.vision || model.vision === true) && (model.protocol !== "systemone" || capability.decision === true);
+}
+
+function checkedModel(capability: string, c: Capability, chosen: string): string {
+  const model = MODELS[chosen] ? chosen : c.default;
+  const spec = MODELS[model];
+  if (spec && !capabilityAcceptsModel(c, spec)) {
+    const requirement = spec.protocol === "systemone" && c.decision !== true
+      ? "systemone requires a decision step (prefilter or score)"
+      : "this step needs a vision model";
+    throw new Error(`Model ${model} cannot be used for ${capability}: ${requirement}`);
+  }
+  return model;
 }
 
 /** The model a capability uses now: admin switch, else environment, else the code default. */
@@ -90,7 +105,7 @@ export async function modelFor(capability: CapabilityKey | (string & {})): Promi
   const c = capabilities()[capability];
   if (!c) throw new Error(`unknown model step: ${capability}`);
   const chosen = (await overrides())[capability] ?? process.env[c.env] ?? c.default;
-  return MODELS[chosen] ? chosen : c.default;
+  return checkedModel(capability, c, chosen);
 }
 
 /** Where the current choice comes from, for the admin page. */
@@ -98,15 +113,17 @@ export async function modelSources(): Promise<Record<string, { model: string; so
   const o = await overrides();
   const out: Record<string, { model: string; source: "admin" | "env" | "default" }> = {};
   for (const [key, c] of Object.entries(capabilities())) {
-    if (o[key]) out[key] = { model: o[key]!, source: "admin" };
-    else if (process.env[c.env] && MODELS[process.env[c.env]!]) out[key] = { model: process.env[c.env]!, source: "env" };
-    else out[key] = { model: c.default, source: "default" };
+    if (o[key]) out[key] = { model: checkedModel(key, c, o[key]!), source: "admin" };
+    else if (process.env[c.env] && MODELS[process.env[c.env]!]) out[key] = { model: checkedModel(key, c, process.env[c.env]!), source: "env" };
+    else out[key] = { model: checkedModel(key, c, c.default), source: "default" };
   }
   return out;
 }
 
 export function fallbackModelFor(capability: string, primary: string): string | undefined {
-  return Object.values(MODELS).find(model => model.fallbackFor?.[capability] === primary && model.service !== MODELS[primary]!.service)?.key;
+  const c = capabilities()[capability];
+  if (!c) return undefined;
+  return Object.values(MODELS).find(model => model.fallbackFor?.[capability] === primary && model.service !== MODELS[primary]!.service && capabilityAcceptsModel(c, model))?.key;
 }
 
 /** Preserve an explicit primary choice; only the site's evaluated pair may fail over. */

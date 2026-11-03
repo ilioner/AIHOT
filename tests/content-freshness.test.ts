@@ -1,7 +1,7 @@
 // Failure cases: a catalogue tail becomes today's news; no date is presented as a publication date;
 // a high model score bypasses unknown freshness; an already queued card bypasses the new rule;
 // later metadata either never releases real news or revives old material; a modified date or a
-// model's release date in prose is mistaken for the page's publication; first-import tails go live.
+// policy's release date in prose is mistaken for the page's publication; first-import tails go live.
 import { tag } from './setup.ts';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -20,7 +20,7 @@ import { stopBoss } from '@aihot/backend/jobs/queue';
 import { buildApp } from '../apps/api/src/app.ts';
 
 const T=tag(), SOURCE=`freshness-${T}`;
-const body='This page describes an existing model released in 2025. Its benchmark scores and pricing are reference data, with no announcement of a new change. '.repeat(5);
+const body='This page describes an existing vocational education policy issued in 2025. Its training subsidy standards and eligibility rules are reference data, with no announcement of a new change. '.repeat(5);
 let listing: Array<{title:string;url:string;date:string|null;summary:string}>=[];
 let html='';
 const server=http.createServer((req,res)=>{
@@ -40,7 +40,7 @@ const row=async(id:string)=>(await sql`SELECT * FROM articles WHERE id=${id}`)[0
 async function highScore(id:string){
   const a=await row(id);
   await sql`INSERT INTO analyses(article_id,input_revision,origin,relevance,category,title_zh,summary_zh,score,selected,output)
-    VALUES(${id},${a.revision},'rule','pass','ai-models',${'模型资料 '+id},'这是一份模型资料，评分不能证明它刚发布。',99,true,${sql.json({scope:'single',fact:{title:'Model release',subject:'Maker',action:'release',object:'Model'}})})`;
+    VALUES(${id},${a.revision},'rule','pass','policy',${'职教政策资料 '+id},'这是一份职教政策资料，评分不能证明它刚发布。',99,true,${sql.json({scope:'single',fact:{title:'Vocational education policy release',subject:'Vocational education authority',action:'issue',object:'Vocational education policy'}})})`;
   await sql`UPDATE articles SET grouping_status='complete',grouped_at=now(),selection_adds_value=true WHERE id=${id}`;
   await publishArticle(id);
 }
@@ -49,9 +49,9 @@ test('a previously unseen, undated tail cannot become selected news, heat, a rep
   const now=new Date();
   listing=Array.from({length:60},(_,i)=>({url:`${base}/known-${i}`,title:`Known ${i}`,date:now.toISOString(),summary:body}));
   await collectSource(SOURCE);
-  listing.push({url:base+'/old-model',title:'Old model data',date:null,summary:body});
+  listing.push({url:base+'/old-policy',title:'Old vocational education policy data',date:null,summary:body});
   assert.equal((await collectSource(SOURCE)).created,1);
-  const [a]=await sql`SELECT * FROM articles WHERE url=${base+'/old-model'}`;
+  const [a]=await sql`SELECT * FROM articles WHERE url=${base+'/old-policy'}`;
   assert.equal(a!.published_at,null);
   assert.equal(a!.backfill,true,'unknown publication time does not establish recency');
   const input=await loadAnalyzeInput(a!.id);
@@ -90,11 +90,11 @@ test('an original source can supply a missing date without changing the text; di
   }
 });
 
-test('body extraction uses page publication metadata, never its updated time or a model release in the prose',async()=>{
+test('body extraction uses page publication metadata, never its updated time or a policy release in the prose',async()=>{
   const publishedAt=new Date(Date.now()-200*86400000).toISOString();
   for(const mode of ['published','modified-only'] as const){
-    html=`<html><head><title>Model reference</title>${mode==='published'?`<meta property="article:published_time" content="${publishedAt}">`:''}<meta property="article:modified_time" content="${new Date().toISOString()}"></head><body><article><h1>Model reference</h1><p>${body}</p></article></body></html>`;
-    const {articleId}=await upsertMaterial({sourceId:SOURCE,url:`${base}/extract-${mode}`,title:'Model reference',via:'fetch'});
+    html=`<html><head><title>Vocational education policy reference</title>${mode==='published'?`<meta property="article:published_time" content="${publishedAt}">`:''}<meta property="article:modified_time" content="${new Date().toISOString()}"></head><body><article><h1>Vocational education policy reference</h1><p>${body}</p></article></body></html>`;
+    const {articleId}=await upsertMaterial({sourceId:SOURCE,url:`${base}/extract-${mode}`,title:'Vocational education policy reference',via:'fetch'});
     assert.equal(await extractArticleBody(articleId),'ok');
     const a=await row(articleId);
     assert.equal(a.published_at?.toISOString()??null,mode==='published'?publishedAt:null);

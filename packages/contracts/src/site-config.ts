@@ -2,6 +2,8 @@
 export interface ModelPreset {
   service: string;
   model: string;
+  /** Unspecified uses chat; systemone returns decisions rather than generated text. */
+  protocol?: "chat" | "systemone";
   baseUrlEnv: string;
   apiKeyEnv: string;
   /** Extra request fields, e.g. switching reasoning off for short structured tasks. */

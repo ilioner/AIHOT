@@ -29,7 +29,7 @@ export interface AnalyzeInputArticle {
     firstParty: boolean;
     tags?: string[];
     ownerEntityId?: string | null;
-    /** The source asks for the article page (fetchPublicContent, detail pages, web listings). */
+    /** The source asks for the article page (fetchPublicContent, detail pages, web listings, web searches). */
     fetchesBody?: boolean;
   };
   /** Stored Chinese translation of the body (e.g. a full post whose original was truncated). */
@@ -65,14 +65,14 @@ export async function loadAnalyzeInput(articleId: string): Promise<AnalyzeInputA
     bodyText: row.body_text, excerpt: row.excerpt, bodyStatus: row.body_status, xPost: withXArticle(row.x_post, row.x_article), media: row.media,
     source: {
       name: row.source_name, kind: row.source_kind, tier: row.tier, firstParty: row.tier === "T1", tags: row.source_tags, ownerEntityId: row.owner_entity_id,
-      fetchesBody: row.config?.fetchPublicContent === true || !!row.config?.detail || row.source_kind === "web_list",
+      fetchesBody: row.config?.fetchPublicContent === true || !!row.config?.detail || row.source_kind === "web_list" || row.source_kind === "web_search",
     },
     translationZh: row.translation_zh,
   };
 }
 
 const KIND_LABEL: Record<string, string> = {
-  rss: "RSS", web_list: "网页", json_list: "网页接口", x_search: "X 帖子", mp_account: "微信公众号", external: "外部上报",
+  rss: "RSS", web_list: "网页", json_list: "网页接口", web_search: "网页搜索", x_search: "X 帖子", mp_account: "微信公众号", external: "外部上报",
 };
 
 /** The material as the structure step reads it (source facts, text, link). */

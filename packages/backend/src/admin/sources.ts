@@ -18,6 +18,7 @@ import { enrichDetails, listingEntries, storedDetails } from "../sources/collect
 import { filterPublicationWindow } from "../sources/filters.ts";
 import { FetchError, type Candidate, type SourceRow } from "../sources/types.ts";
 import { fetchWebList } from "../sources/web-list.ts";
+import { fetchWebSearch } from "../sources/web-search.ts";
 import { fetchXSearch } from "../sources/x.ts";
 import { xHandle } from "../sources/account.ts";
 
@@ -91,6 +92,7 @@ export async function previewSource(draft: Pick<SourceRow, "id" | "kind" | "conf
   if (source.kind === "rss") found = (await fetchRss(source, { force: true })).candidates;
   else if (source.kind === "web_list") found = await fetchWebList(source);
   else if (source.kind === "json_list") found = await fetchJsonList(source);
+  else if (source.kind === "web_search") found = (await fetchWebSearch(source)).candidates;
   else if (source.kind === "x_search") found = (await fetchXSearch(source)).candidates;
   else throw new Error(`preview is not available for ${source.kind} sources`);
   // The listing and its detail pages as collection reads them, within the fixed publication boundary;
@@ -216,7 +218,7 @@ const CreateSchema = z
   .object({
     id: z.string().regex(/^[a-z0-9][a-z0-9-]{2,79}$/),
     name: z.string().min(1).max(200),
-    kind: z.enum(["rss", "web_list", "json_list", "x_search", "mp_account", "external"]),
+    kind: z.enum(["rss", "web_list", "json_list", "web_search", "x_search", "mp_account", "external"]),
     config: z.record(z.string(), z.unknown()),
     tier: z.enum(["T1", "T1_5", "T2", "EXCLUDE_MP"]).default("T2"),
     participation_mode: z.enum(["editorial", "hot_signal", "isolated"]).default("editorial"),
@@ -239,6 +241,11 @@ export function sourceIdentity(kind: string, config: Record<string, unknown>): s
   if (kind === "mp_account") {
     const id = String(config.ghid ?? config.wxid ?? "").trim().toLowerCase();
     return id ? `mp:${id}` : null;
+  }
+  // A search's address is its query and where it is asked: one query is paid for once, however named.
+  if (kind === "web_search") {
+    const query = String(config.query ?? "").trim().toLowerCase();
+    return query ? `search:${query}|${String(config.lang ?? "")}|${String(config.region ?? "")}` : null;
   }
   if (!raw) return null;
   return normalizeUrl(String(raw).replace(/^https:\/\/r\.jina\.ai\//, "")) ?? String(raw);

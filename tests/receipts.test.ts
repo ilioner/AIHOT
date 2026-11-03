@@ -1,15 +1,17 @@
 // Paid requests: an answer already received is reused, every request actually sent counts against the
 // budget (retries of one logical request included), a lost answer is bought again at most once, an
 // answer cut off at the output limit says so, and the valve stops calls before they are sent.
-import { gate, stub, tag } from "./setup.ts";
+import { gate, Reply, stub, tag } from "./setup.ts";
 import assert from "node:assert/strict";
+import type { IncomingHttpHeaders } from "node:http";
 import { after, test } from "node:test";
 import { z } from "zod";
 import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { chatJson } from "@aihot/backend/providers/llm";
+import { choiceDecision } from "@aihot/backend/providers/systemone";
 import { embeddingsAvailable } from "@aihot/backend/providers/embeddings";
-import { assertAccepted, failureKind, ProviderRejectedError, BudgetExceededError, logicalKeyFor, markStalePendingReceipts, ModelOutputError, paidRequest, providerStopKey, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
+import { assertAccepted, failureKind, ProviderRejectedError, BudgetExceededError, logicalKeyFor, markStalePendingReceipts, ModelOutputError, ModelUnavailableError, paidRequest, providerStopKey, ReceiptUnknownError } from "@aihot/backend/providers/receipts";
 import { autoReleaseUnknownReceipts } from "@aihot/backend/operations/recover";
 
 const usage = { prompt_tokens: 80, completion_tokens: 20, total_tokens: 100 };
@@ -415,5 +417,235 @@ test("one model's spent quota stops that model, not the service's other models",
   } finally {
     await sql`DELETE FROM receipts WHERE service = 'dashscope' AND model IN (${vision}, ${text})`;
     await sql`DELETE FROM settings WHERE key = ${providerStopKey("dashscope", vision)}`;
+  }
+});
+
+const decisionRequest = (subject: string) => ({
+  model: "decision-model-preview", purpose: "invariant_test", subject, promptVersion: "t1",
+  state: { article: subject },
+  questions: { label: { type: "choice" as const, instructions: "判断是否相关", criteria: { PASS: "相关", BLOCK: "不相关", UNKNOWN: "不确定" } } },
+  schema: z.object({ label: z.enum(["PASS", "BLOCK", "UNKNOWN"]) }),
+  parse: (choices: Record<string, string>) => ({ label: choices.label }),
+});
+
+test("System One choice decisions", async (t) => {
+  const original = { SYSTEMONE_BASE_URL: process.env.SYSTEMONE_BASE_URL, SYSTEMONE_API_KEY: process.env.SYSTEMONE_API_KEY };
+  const enabled = config.modelCallsEnabled;
+  const accepted = { answers: { label: { type: "choice", choice: "PASS" } } };
+  const localValue = "test-key";
+  config.modelCallsEnabled = true;
+  process.env.SYSTEMONE_API_KEY = localValue;
+  try {
+    await t.test("send native requests and reuse paid answers with normalized usage", async () => {
+      const rawUsage = { input_tokens: 80, total_tokens: 80 };
+      const response = { ...accepted, request_id: "systemone-request", usage: rawUsage };
+      const requests: { url: string; body: string; headers: IncomingHttpHeaders }[] = [];
+      const server = await stub((_hit, req) => { requests.push(req); return response; });
+      const opts = decisionRequest(`systemone-reuse-${tag()}`);
+      process.env.SYSTEMONE_BASE_URL = `${server.url}/v1/`;
+      try {
+        const first = await choiceDecision(opts);
+        const second = await choiceDecision(opts);
+        assert.equal(server.hits(), 1);
+        assert.equal(requests[0]!.url, "/v1/systemone");
+        assert.equal(requests[0]!.headers.authorization, "Bearer test-key");
+        assert.equal(requests[0]!.headers["content-type"], "application/json");
+        assert.deepEqual(JSON.parse(requests[0]!.body), { model: opts.model, state: opts.state, questions: opts.questions });
+        assert.deepEqual(first.data, { label: "PASS" });
+        assert.deepEqual(second.data, first.data);
+        assert.equal(first.reused, false);
+        assert.equal(second.reused, true);
+        assert.equal(second.receiptId, first.receiptId);
+        assert.deepEqual(first.usage, rawUsage, "the result retains native provider usage");
+        const [receipt] = await sql`SELECT service,model,status,request_id,response,usage FROM receipts WHERE id = ${first.receiptId}`;
+        assert.equal(receipt!.service, "dashscope");
+        assert.equal(receipt!.model, "decision-model-preview");
+        assert.equal(receipt!.status, "received");
+        assert.equal(receipt!.request_id, response.request_id);
+        assert.deepEqual(receipt!.response.answers, response.answers);
+        assert.equal(receipt!.response.request_id, response.request_id);
+        assert.deepEqual(receipt!.response.usage, rawUsage);
+        assert.deepEqual(receipt!.usage, { ...rawUsage, prompt_tokens: 80 });
+        const attempts = await sql`SELECT status,request_id,usage FROM receipt_attempts WHERE receipt_id = ${first.receiptId}`;
+        assert.deepEqual(attempts.map((a) => ({ status: a.status, request_id: a.request_id, usage: a.usage })),
+          [{ status: "received", request_id: response.request_id, usage: receipt!.usage }]);
+      } finally {
+        await server.close();
+      }
+    });
+
+    await t.test("bind receipts to state, questions, prompt version, endpoint and explicit reruns", async () => {
+      const firstServer = await stub(() => accepted);
+      let secondServer: Awaited<ReturnType<typeof stub>> | undefined;
+      const opts = decisionRequest(`systemone-identity-${tag()}`);
+      process.env.SYSTEMONE_BASE_URL = `${firstServer.url}/v1`;
+      try {
+        secondServer = await stub(() => accepted);
+        const results = [await choiceDecision(opts)];
+        for (const change of [
+          { state: `${opts.subject} updated` },
+          { questions: { label: { ...opts.questions.label, instructions: "只判断正文是否相关" } } },
+          { promptVersion: "t2" },
+          { attemptTag: "rerun" },
+        ]) results.push(await choiceDecision({ ...opts, ...change }));
+        process.env.SYSTEMONE_BASE_URL = `${secondServer.url}/v1`;
+        results.push(await choiceDecision(opts));
+        assert.equal(firstServer.hits(), 5);
+        assert.equal(secondServer.hits(), 1);
+        assert.equal(new Set(results.map((r) => r.receiptId)).size, results.length);
+        assert.ok(results.every((r) => !r.reused));
+      } finally {
+        await Promise.all([firstServer.close(), secondServer?.close()]);
+      }
+    });
+
+    await t.test("reject invalid answers as failed output while keeping the received payload", async () => {
+      const cases: [string, unknown][] = [
+        ["invalid choice", { answers: { label: { type: "choice", choice: "MAYBE" } } }],
+        ["missing answer", { answers: {} }],
+        ["extra answer", { answers: { ...accepted.answers, extra: { type: "choice", choice: "PASS" } } }],
+        ["wrong answer id", { answers: { other: { type: "choice", choice: "PASS" } } }],
+        ["wrong answer type", { answers: { label: { type: "text", choice: "PASS" } } }],
+        ["null answer", { answers: { label: null } }],
+        ["null response", null],
+        ["bad JSON", new Reply(200, null, "not JSON {")],
+      ];
+      let response: unknown;
+      const server = await stub(() => response);
+      process.env.SYSTEMONE_BASE_URL = `${server.url}/v1`;
+      try {
+        for (const [name, out] of cases) {
+          response = out;
+          const opts = decisionRequest(`systemone-${name}-${tag()}`);
+          await assert.rejects(choiceDecision(opts), ModelOutputError, name);
+          const [receipt] = await sql`SELECT id,status,response,error FROM receipts WHERE subject = ${opts.subject}`;
+          assert.equal(receipt!.status, "failed", name);
+          assert.match(receipt!.error, /unusable output/, name);
+          const saved = { ...receipt!.response };
+          delete saved._latencyMs;
+          assert.deepEqual(saved, out instanceof Reply ? { unparsable: out.rawBody } : out === null ? { unparsable: "null" } : out, name);
+          const attempts = await sql<{ status: string }[]>`SELECT status FROM receipt_attempts WHERE receipt_id = ${receipt!.id}`;
+          assert.deepEqual(attempts.map((a) => a.status), ["received"], "unusable output still came from a received paid attempt");
+        }
+        assert.equal(server.hits(), cases.length);
+      } finally {
+        await server.close();
+      }
+    });
+
+    await t.test("stop unavailable decisions and chat misuse before requests or receipts", async () => {
+      const server = await stub(() => accepted);
+      const opts = decisionRequest(`systemone-off-${tag()}`);
+      const chatHits = provider.hits();
+      process.env.SYSTEMONE_BASE_URL = `${server.url}/v1`;
+      try {
+        config.modelCallsEnabled = false;
+        await assert.rejects(choiceDecision(opts), ModelUnavailableError);
+        config.modelCallsEnabled = true;
+        delete process.env.SYSTEMONE_API_KEY;
+        await assert.rejects(choiceDecision(opts), ModelUnavailableError);
+        process.env.SYSTEMONE_API_KEY = localValue;
+        delete process.env.SYSTEMONE_BASE_URL;
+        await assert.rejects(choiceDecision(opts), ModelUnavailableError);
+        process.env.SYSTEMONE_BASE_URL = `${server.url}/v1`;
+        await assert.rejects(choiceDecision({ ...opts, model: "deepseek-flash" }), ModelUnavailableError);
+        await assert.rejects(chatJson({ model: opts.model, purpose: opts.purpose, subject: opts.subject, promptVersion: opts.promptVersion,
+          system: "s", user: opts.subject, schema: opts.schema }), ModelUnavailableError);
+        assert.equal(server.hits(), 0);
+        assert.equal(provider.hits(), chatHits);
+        assert.equal((await sql`SELECT id FROM receipts WHERE subject = ${opts.subject}`).length, 0);
+      } finally {
+        config.modelCallsEnabled = true;
+        process.env.SYSTEMONE_API_KEY = localValue;
+        await server.close();
+      }
+    });
+
+    await t.test("classify HTTP 503 as an unbilled outage instead of an unknown outcome", async () => {
+      const server = await stub(() => new Reply(503, { code: "ServiceUnavailable", message: "try later" }));
+      const opts = decisionRequest(`systemone-outage-${tag()}`);
+      process.env.SYSTEMONE_BASE_URL = `${server.url}/v1`;
+      try {
+        await assert.rejects(choiceDecision(opts), (error: unknown) => {
+          assert.ok(error instanceof ProviderRejectedError);
+          assert.equal(error.status, 503);
+          assert.equal(failureKind(error), "outage");
+          return true;
+        });
+        assert.equal(server.hits(), 1);
+        const [receipt] = await sql`SELECT status,error FROM receipts WHERE subject = ${opts.subject}`;
+        assert.equal(receipt!.status, "failed");
+        assert.match(receipt!.error, /HTTP 503.*ServiceUnavailable/);
+      } finally {
+        await server.close();
+      }
+    });
+
+    await t.test("classify a refused local connection as an unbilled outage", async () => {
+      const server = await stub(() => accepted);
+      const opts = decisionRequest(`systemone-connect-${tag()}`);
+      process.env.SYSTEMONE_BASE_URL = `${server.url}/v1`;
+      await server.close();
+      await assert.rejects(choiceDecision(opts), (error: unknown) => {
+        assert.ok(error instanceof ProviderRejectedError);
+        assert.equal(error.status, null);
+        assert.equal(failureKind(error), "outage");
+        return true;
+      });
+      assert.equal(server.hits(), 0);
+      const [receipt] = await sql`SELECT status,error FROM receipts WHERE subject = ${opts.subject}`;
+      assert.equal(receipt!.status, "failed");
+      assert.match(receipt!.error, /connect failed/);
+    });
+
+    await t.test("keep an accepted timeout unknown and never resend it", async () => {
+      const hit = gate();
+      const release = gate();
+      const server = await stub(async () => { hit.open(); await release.promise; return accepted; });
+      const opts = { ...decisionRequest(`systemone-timeout-${tag()}`), timeoutMs: 500 };
+      process.env.SYSTEMONE_BASE_URL = `${server.url}/v1`;
+      try {
+        const pending = assert.rejects(choiceDecision(opts), ReceiptUnknownError);
+        await Promise.race([hit.promise, pending]);
+        assert.equal(server.hits(), 1, "the provider has accepted the request before its response is withheld");
+        await pending;
+        const [receipt] = await sql`SELECT id,status FROM receipts WHERE subject = ${opts.subject}`;
+        assert.equal(receipt!.status, "unknown");
+        await assert.rejects(choiceDecision(opts), (error: unknown) => error instanceof ReceiptUnknownError && error.receiptId === receipt!.id);
+        assert.equal(server.hits(), 1, "an unknown paid outcome must not be bought again");
+        const attempts = await sql<{ status: string }[]>`SELECT status FROM receipt_attempts WHERE receipt_id = ${receipt!.id}`;
+        assert.deepEqual(attempts.map((a) => a.status), ["unknown"]);
+      } finally {
+        release.open();
+        await server.close();
+      }
+    });
+
+    await t.test("honor the shared DashScope budget before reserving a request", async () => {
+      const [budget] = await sql<{ per_minute: number; per_hour: number; per_day: number }[]>`
+        SELECT per_minute,per_hour,per_day FROM budgets WHERE service = 'dashscope'`;
+      assert.ok(budget);
+      const server = await stub(() => accepted);
+      const opts = decisionRequest(`systemone-budget-${tag()}`);
+      process.env.SYSTEMONE_BASE_URL = `${server.url}/v1`;
+      try {
+        await sql`UPDATE budgets SET per_minute = 0 WHERE service = 'dashscope'`;
+        await assert.rejects(choiceDecision(opts), (error: unknown) => error instanceof BudgetExceededError && error.service === "dashscope");
+        assert.equal(server.hits(), 0);
+        assert.equal((await sql`SELECT id FROM receipts WHERE subject = ${opts.subject}`).length, 0);
+      } finally {
+        try {
+          await sql`UPDATE budgets SET per_minute = ${budget.per_minute}, per_hour = ${budget.per_hour}, per_day = ${budget.per_day} WHERE service = 'dashscope'`;
+        } finally {
+          await server.close();
+        }
+      }
+    });
+  } finally {
+    config.modelCallsEnabled = enabled;
+    for (const [name, value] of Object.entries(original)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
 });

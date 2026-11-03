@@ -16,6 +16,7 @@ import { unsupportedConfig } from "@aihot/backend/sources/config-keys";
 import { fetchDetail, fetchWebList, fromHtml, fromMarkdown } from "@aihot/backend/sources/web-list";
 import { fetchRss } from "@aihot/backend/sources/rss";
 import { fetchJsonList } from "@aihot/backend/sources/json-list";
+import { resultsToCandidates } from "@aihot/backend/sources/web-search";
 import { noiseFiltered } from "@aihot/backend/sources/filters";
 
 const source = (config: Record<string, unknown>) => ({ id: "test-list", config }) as never;
@@ -281,4 +282,32 @@ test("a source's language is an Accept-Language value, refused by kinds that rea
     }
   }
   for (const kind of ["x_search", "mp_account", "external"] as const) assert.deepEqual(unsupportedConfig(kind, { acceptLanguage: "en" }), ["acceptLanguage"], kind);
+});
+
+test("a paid web search keeps only organic results and never claims a date", () => {
+  const { candidates, ads } = resultsToCandidates([
+    { id: "s_1", rank: 1, type: "organic", title: "人工智能赋能职业教育", url: "https://news.example.cn/a", snippet: "摘要", engine: "bing" },
+    { id: "s_2", rank: 2, type: "ad", title: "广告位", url: "https://ads.example.com/b" },
+    // A result the caller cannot use: not a page, no title, or a URL already seen earlier in the same run.
+    { id: "s_3", rank: 3, type: "organic", title: "非网页结果", url: "javascript:void(0)" },
+    { id: "s_4", rank: 4, type: "organic", title: "   ", url: "https://news.example.cn/c" },
+    { id: "s_5", rank: 5, type: "organic", title: "同一条的重复命中", url: "https://news.example.cn/a" },
+    { id: "s_6", rank: 6, type: "organic", title: "课程改革案例", url: "https://school.example.cn/d", snippet: "" },
+  ]);
+  assert.equal(ads, 1, "the advertisement is counted and dropped");
+  assert.deepEqual(candidates.map((c) => c.url), ["https://news.example.cn/a", "https://school.example.cn/d"]);
+  for (const c of candidates) {
+    // A search result has no publication time: the page is read, and extraction may date it from there.
+    assert.equal(c.publishedAt, undefined, c.url);
+    assert.equal(c.bodyStatus, "pending", c.url);
+  }
+  assert.equal(candidates[0]!.excerpt, "摘要");
+  assert.equal(candidates[1]!.excerpt, null, "an empty snippet is no excerpt, not an empty one");
+});
+
+test("a paid web search's config admits queries only, and refuses a boundary it could not apply", () => {
+  assert.deepEqual(unsupportedConfig("web_search", { query: "人工智能 职业教育", lang: "zh-CN", region: "CN", limit: 10, _aihot: { initialBackfillLimit: 10 } }), []);
+  // Every entry would fail a publication window (the results carry no date yet): refuse the trap instead.
+  for (const key of ["publishedAfter", "detail", "sortByPublishedAt", "adapter"]) assert.deepEqual(unsupportedConfig("web_search", { [key]: key === "detail" ? { maxFetches: 5 } : "2026-09-28T00:00:00Z" }), [key], key);
+  assert.deepEqual(unsupportedConfig("web_search", { _aihot: { initialBackfillLimit: 10 }, ingestNoiseFilter: { dropMarkers: ["招聘"] }, itemUrlPrefixRewrite: { from: "a", to: "b" }, allowUrlPrefixes: ["https://news.example.cn/"], publishedAtUtcOffset: "+08:00", acceptLanguage: "zh-CN" }), []);
 });

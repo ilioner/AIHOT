@@ -168,7 +168,7 @@ export default function ModelsAdmin({ loaderData: m }: Route.ComponentProps) {
         <Field label="模型">
           <Select value={choice} onChange={(e) => setChoice(e.target.value)}>
             {m.choices
-              .filter((x) => !target?.vision || x.vision)
+              .filter((x) => target && x.compatibleCapabilities.includes(target.key))
               .map((x) => (
                 <option key={x.key} value={x.key}>
                   {x.key}（{x.service}）

@@ -71,7 +71,8 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
     const amount = (fresh / 1e6) * Number(p.input_per_mtok ?? 0) + (cached / 1e6) * Number(p.cached_per_mtok ?? p.input_per_mtok ?? 0) + (Number(u.tokens_out_uncosted ?? 0) / 1e6) * Number(p.output_per_mtok ?? 0);
     return { amount, currency: p.currency };
   };
-  const steps = Object.entries(capabilities()).map(([key, c]) => {
+  const all = capabilities();
+  const steps = Object.entries(all).map(([key, c]) => {
     const backup = fallbackModelFor(key, sources[key]!.model);
     const primaryCircuit = circuits[MODELS[sources[key]!.model]!.service];
     const backupCircuit = backup ? circuits[MODELS[backup]!.service] : undefined;
@@ -104,7 +105,10 @@ export async function modelsOverview(days = 7): Promise<BeforeJson<AdminModels>>
         })),
     };
   });
-  const choices = Object.values(MODELS).map((m) => ({ key: m.key, service: m.service, vision: !!m.vision }));
+  const choices = Object.values(MODELS).map((m) => ({
+    key: m.key, service: m.service, vision: !!m.vision,
+    compatibleCapabilities: Object.entries(all).filter(([, c]) => capabilityAcceptsModel(c, m)).map(([key]) => key),
+  }));
   return { days, capabilities: steps, choices, history, benches };
 }
 
@@ -116,7 +120,12 @@ export async function switchModel(capability: string, model: string | null, reas
   if (model !== null) {
     const spec = MODELS[model];
     if (!spec) throw Object.assign(new Error("unknown model"), { statusCode: 400 });
-    if (!capabilityAcceptsModel(c, spec)) throw Object.assign(new Error("this capability needs a vision model"), { statusCode: 400 });
+    if (!capabilityAcceptsModel(c, spec)) {
+      const requirement = spec.protocol === "systemone" && c.decision !== true
+        ? "systemone requires a decision step (prefilter or score)"
+        : "this capability needs a vision model";
+      throw Object.assign(new Error(`Model ${model} cannot be used for ${capability}: ${requirement}`), { statusCode: 400 });
+    }
   }
   const before = (await modelSources())[capability];
   if (model === null) await sql`DELETE FROM settings WHERE key = ${`models.${capability}`}`;

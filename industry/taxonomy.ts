@@ -12,144 +12,112 @@
  * feedLabel 是分类 RSS 标题里的名字（不写就用 label）。公开接口、RSS 和 MCP 里要把一类并进另一类发布，写在站点设置里（site/site.ts 的 PUBLIC_CATEGORIES）。
  */
 export const CATEGORIES = [
-  { key: "ai-models", tagColor: "indigo", label: "模型", feedLabel: "AI 模型", section: "模型发布/更新", guide: "模型本身的发布、版本、权重开放、能力或价格变化，以及既有榜单上的模型成绩。公布一次跑分不是发布新基准，也不是教程。" },
-  { key: "ai-products", tagColor: "turquoise", label: "产品", feedLabel: "AI 产品", section: "产品发布/更新", guide: "可使用的 AI 产品、功能、应用、工具、API、平台和工程组件的发布更新。模型厂商发布的推理框架、算子库、硬件适配组件仍是产品，不能因为厂商名归成模型。" },
-  { key: "industry", tagColor: "orange", label: "行业", feedLabel: "行业动态", section: "行业动态", guide: "已发生的公司经营、融资并购、人事、合作、诉讼、政策、真实安全事故及调查进展。新闻由当事人发帖、带有态度，也不因此变成观点。" },
-  { key: "paper", tagColor: "violet", label: "论文", feedLabel: "论文", section: "论文研究", guide: "以新研究方法、实验设计与发现为核心的论文、技术报告、新基准或研究数据集。系统性红队实验属于研究；既有榜单成绩归模型，真实事故的新闻调查归行业。" },
-  { key: "tip", tagColor: "green", label: "教程", section: "技巧与观点", guide: "读者可以照着使用的方法、提示词、工具用法、工程实践复盘与技术讲解。重点是可复用的做法；单纯发布工具归产品，只有态度和预测而无做法归观点。", commentary: true },
-  { key: "opinion", tagColor: "purple", label: "观点", section: "技巧与观点", guide: "重点是作者的解释、判断、主张、预测、评论或访谈观点。讨论市场不自动归行业，作者是名人不自动归观点。", commentary: true },
+  { key: "policy", tagColor: "indigo", label: "政策", feedLabel: "职教政策", section: "政策文件", guide: "教育信息化、AI＋教育／职教的教学改革指导、使用约束、标准与规范：发布、解读、征求意见、生效与实施要求。按实际适用对象和规定事项归类，保留文件阶段；一般行政通知不因发布机构级别高而属于本站政策范围。" },
+  { key: "ai-teaching", tagColor: "turquoise", label: "AI 赋能教学", feedLabel: "AI 赋能教学", section: "AI 赋能教学", guide: "与教师任务直接相关的 AI 工具、平台或模型能力发布，以及课堂、实训、备课与评价中的实际应用。通用能力无需已有职业院校部署，但不能把可能教学用途写成已落地；核心是既有工具的方法与演示时归教程，核心是技术影响的论证时归观点。" },
+  { key: "industry", tagColor: "orange", label: "行业", feedLabel: "行业动态", section: "行业动态", guide: "与 AI 教学或教育信息化有关、已经发生的服务开放、交付、合作实施或运行变化。签约揭牌、融资人事和机构表态本身不是教学内容；材料以具体教程、研究或政策要求为核心时归对应类别。新闻由当事人发帖、带有态度，也不因此变成观点。" },
+  { key: "skills", tagColor: "violet", label: "技能与竞赛", feedLabel: "技能与竞赛", section: "技能与竞赛", guide: "与 AI 教学、教师应用能力或智能实训有关的竞赛、能力认定安排、结果与规则变化。名次和颁奖不等于可复用方法；核心在讲解参赛教案、提示词、工作流或评价方法时归教程。" },
+  { key: "research", tagColor: "green", label: "研究", feedLabel: "研究与报告", section: "研究与报告", guide: "以研究设计、实验、评估数据与发现为核心的 AI 教学、学习评价、教师工作、技术能力或风险研究。区分技术测评与教学效果证据；政策要求解读归政策，以操作流程为主的实测归教程，不能只因出现数字就归研究。" },
+  { key: "tip", tagColor: "amber", label: "教程", section: "技巧与观点", guide: "可复用的 AI 工具、提示词、备课、教案与课件制作、课堂实训、作业与评价方法，包括操作示例、失败复盘和使用限制。通用工具或其他学段的方法无需职业院校背书；培训有具体资源就按资源归类，不按活动外壳。新能力发布归 AI 赋能教学，论证影响而无操作方法归观点。", commentary: true },
+  { key: "opinion", tagColor: "purple", label: "观点", section: "技巧与观点", guide: "围绕 AI 教学、教育信息化、相关政策或技术影响，有事实与推理支持的解释、判断、复盘、预测或访谈观点。可能的教学迁移不得写成已验证效果；以文件要求和适用范围为核心的解读归政策，作者是名人不自动归观点。", commentary: true },
 ] as const satisfies ReadonlyArray<{ key: string; tagColor: string; label: string; feedLabel?: string; section: string; guide: string; commentary?: true }>;
 
 /**
- * 这个行业最受关注的一类发布（AI 行业是新模型）：日报报头的“N 个新模型”、改分类后修订已出的报告都按它数。
+ * 这个行业最受关注的一类发布：日报报头的“N 份新文件”、改分类后修订已出的报告都按它数。
  * category 是类别，tag 是标签，两者都对上才算；unit 接在数字后面。
  * 没有这样一类的行业设成 null，报头就不显示这个数。
  */
-export const RELEASE: { category: string; tag: string; unit: string } | null = { category: "ai-models", tag: "模型发布", unit: "个新模型" };
+export const RELEASE: { category: string; tag: string; unit: string } | null = { category: "policy", tag: "政策文件", unit: "份新文件" };
 
 /** 周报月报的总述可以直接写、不必在报道里找到出处的行业通用词（小写）。站名会自动算进去。 */
-export const PLAIN_TERMS: readonly string[] = ["ai", "api", "llm", "gpu", "agi", "ceo", "ipo"];
+export const PLAIN_TERMS: readonly string[] = ["ai", "职教", "高职", "中职", "产教融合", "校企合作", "双高", "职教高考", "1+x", "双师型", "工匠"];
 
 /**
  * 内容理解一步给每篇资料判的“内容类型”（写在 prompts/content-understanding.md 里，改了类型要同步改那份提示词）。
  * 评分提示词（prompts/selection-score.md）按类型给五个维度不同的权重。
  */
-export const ITEM_TYPES = ["model_release", "product_launch", "tool_or_prompt", "research_paper", "industry_event", "opinion_analysis", "tutorial_explainer"] as const;
+export const ITEM_TYPES = ["policy_release", "ai_in_teaching", "industry_event", "research_report", "competition_result", "opinion_analysis", "tutorial_explainer"] as const;
 
 // ── 标签词表 ────────────────────────────────────────────────────────────────────────────
 
 /** 每篇资料的第一个标签必须是这些“分类标签”之一。 */
 export const CATEGORY_TAGS = [
-  "产品更新", "模型发布", "论文/研究", "开源/仓库", "教程/实践", "现象/趋势", "大佬观点", "评测/基准", "安全/对齐", "行业动态", "政策/监管",
-  "非AI/通用工具", "其他",
+  "政策文件", "AI赋能教学", "行业动态", "技能竞赛", "研究/报告", "教程/实践", "观点/趋势", "其他",
 ] as const;
 
 /** 可选的主题标签。 */
 export const TOPIC_TAGS = [
-  "Agent", "编码", "推理", "多模态", "语音", "视频", "图像生成", "RAG", "端侧", "数据/训练", "搜索", "部署/工程", "开源生态", "具身智能", "MCP/工具调用",
+  "产教融合", "校企合作", "实训基地", "职教高考", "专业建设", "课程改革", "师资队伍", "招生就业", "技能大赛", "证书认定", "数字校园", "智慧实训", "AI助教", "智能评价", "安全/风险",
 ] as const;
 
-/** 可选的实体标签（公司、机构、平台）。 */
-export const ENTITY_TAGS = ["OpenAI", "Anthropic", "DeepSeek", "DeepMind", "Google", "Meta", "Microsoft", "xAI", "Hugging Face", "GitHub", "arXiv"] as const;
+/** 可选的实体标签（机构、平台）。 */
+export const ENTITY_TAGS = ["教育部", "人社部", "联合国教科文组织", "腾讯", "百度", "阿里云", "华为", "科大讯飞", "新道科技", "智慧树", "超星"] as const;
 
 /** 模型常写的近义词，统一成词表里的写法。 */
 export const TAG_SYNONYMS: Readonly<Record<string, string>> = {
-  "教程/玩法": "教程/实践", "技巧/最佳实践": "教程/实践", "合作/生态": "行业动态", "融资/收购": "行业动态", "公司动态": "行业动态",
-  合作: "行业动态", 生态: "行业动态", 融资: "行业动态", 收购: "行业动态", 投资: "行业动态", 并购: "行业动态",
-  政策: "政策/监管", 监管: "政策/监管", 法规: "政策/监管", 安全: "安全/对齐", 对齐: "安全/对齐",
-  论文: "论文/研究", 研究: "论文/研究", paper: "论文/研究", papers: "论文/研究",
-  "open-source": "开源/仓库", 开源: "开源/仓库", 仓库: "开源/仓库", repo: "开源/仓库",
-  教程: "教程/实践", 玩法: "教程/实践", 指南: "教程/实践", 技巧: "教程/实践", 最佳实践: "教程/实践", 实践: "教程/实践",
-  产品: "产品更新", 更新: "产品更新", 发布: "模型发布", 模型: "模型发布", 趋势: "现象/趋势", 现象: "现象/趋势", 观点: "大佬观点",
-  视频生成: "视频", 非ai: "非AI/通用工具", "non-ai": "非AI/通用工具", 通用工具: "非AI/通用工具", 工程工具: "非AI/通用工具",
-  安全扫描: "非AI/通用工具", devops: "非AI/通用工具", 行业: "行业动态", 动态: "行业动态",
+  政策: "政策文件", 文件: "政策文件", 通知: "政策文件", 法规: "政策文件", 监管: "政策文件", 规划: "政策文件", 标准: "政策文件",
+  "ai": "AI赋能教学", "ai教育": "AI赋能教学", "ai+教育": "AI赋能教学", 智能教育: "AI赋能教学", 教育科技: "AI赋能教学", 数字化: "AI赋能教学", 数字化转型: "AI赋能教学", 智慧教育: "AI赋能教学", 人工智能: "AI赋能教学",
+  行业: "行业动态", 动态: "行业动态", 公司动态: "行业动态", 融资: "行业动态", 收购: "行业动态", 投资: "行业动态", 并购: "行业动态", 合作: "行业动态",
+  竞赛: "技能竞赛", 大赛: "技能竞赛", 技能大赛: "技能竞赛", 赛事: "技能竞赛", 比赛: "技能竞赛", 证书: "证书认定", 认定: "证书认定",
+  论文: "研究/报告", 研究: "研究/报告", 报告: "研究/报告", 白皮书: "研究/报告", paper: "研究/报告", papers: "研究/报告",
+  教程: "教程/实践", 玩法: "教程/实践", 指南: "教程/实践", 技巧: "教程/实践", 最佳实践: "教程/实践", 实践: "教程/实践", 案例: "教程/实践",
+  观点: "观点/趋势", 趋势: "观点/趋势", 现象: "观点/趋势", 评论: "观点/趋势", 评论文章: "观点/趋势",
+  产教: "产教融合", 校企: "校企合作", 实训: "智慧实训", 双师: "师资队伍", 就业: "招生就业", 招生: "招生就业",
+  安全: "安全/风险", 风险: "安全/风险",
 };
 
-// ── 公司与主体 ──────────────────────────────────────────────────────────────────────────
+// ── 机构与主体 ──────────────────────────────────────────────────────────────────────────
 
 /**
- * 公司主题：id → 显示名、卡片上显示的标签（null 表示只用 entity:<id> 归类）、别名。
- * aliases 给结构抽取模型看；orgNames 是这家公司发消息时开头用的组织名（公司、实验室、团队），
- * 在它自己的主题页上读者知道说的是谁，可以省去；otherNames 是公司的其他称呼（官方账号名、子品牌）。
- * 所有这些名字都用来认出说的是哪家公司，比如把事实的主体对到发布方。
+ * 机构主题：id → 显示名、卡片上显示的标签（null 表示只用 entity:<id> 归类）、别名。
+ * aliases 给结构抽取模型看；orgNames 是这家机构发消息时开头用的组织名（部委、学校、企业、团队），
+ * 在它自己的主题页上读者知道说的是谁，可以省去；otherNames 是机构的其他称呼（官方账号名、子品牌）。
+ * 所有这些名字都用来认出说的是哪家机构，比如把事实的主体对到发布方。
  */
 export const ENTITIES: Record<string, { name: string; displayTag: string | null; aliases: string[]; orgNames?: string[]; otherNames?: string[] }> = {
-  "world-labs": { name: "World Labs", displayTag: null, aliases: ["World Labs"] },
-  "thinking-machines": { name: "Thinking Machines Lab", displayTag: null, aliases: ["Thinking Machines"] },
-  amd: { name: "AMD", displayTag: null, aliases: ["AMD", "Advanced Micro Devices"] },
-  openai: { name: "OpenAI", displayTag: "OpenAI", aliases: ["OpenAI", "ChatGPT", "Sora", "Codex", "GPT"], orgNames: ["OpenAI"], otherNames: ["OpenAI Developers"] },
-  anthropic: { name: "Anthropic", displayTag: "Anthropic", aliases: ["Anthropic", "Claude"], orgNames: ["Anthropic"], otherNames: ["Claude Code"] },
-  google: { name: "Google", displayTag: "Google", aliases: ["Google", "DeepMind", "Gemini", "谷歌"], orgNames: ["Google DeepMind", "Google Research", "Google", "DeepMind", "谷歌"], otherNames: ["Google AI", "Google Labs", "Google Cloud"] },
-  deepseek: { name: "DeepSeek", displayTag: "DeepSeek", aliases: ["DeepSeek", "深度求索"], orgNames: ["DeepSeek", "深度求索"] },
-  qwen: { name: "千问 Qwen", displayTag: null, aliases: ["Qwen", "通义", "阿里"], orgNames: ["通义千问", "通义实验室", "阿里巴巴", "阿里云", "阿里", "Qwen Team", "Qwen", "Alibaba"], otherNames: ["千问", "千问APP", "Alibaba Cloud"] },
-  kimi: { name: "Kimi / 月之暗面", displayTag: null, aliases: ["Kimi", "月之暗面", "Moonshot"], orgNames: ["Moonshot AI", "月之暗面", "Kimi"] },
-  minimax: { name: "MiniMax", displayTag: null, aliases: ["MiniMax", "海螺"], orgNames: ["MiniMax", "稀宇科技"] },
-  zhipu: { name: "智谱 GLM", displayTag: null, aliases: ["智谱", "GLM", "Z.ai"], orgNames: ["智谱AI", "智谱", "Zhipu AI", "Z.ai"], otherNames: ["Zhipu"] },
-  xai: { name: "xAI", displayTag: "xAI", aliases: ["xAI", "Grok"], orgNames: ["SpaceX Super Intelligence", "SpaceXAI", "SpaceXSI", "xAI"], otherNames: ["Grok Bot"] },
-  meta: { name: "Meta", displayTag: "Meta", aliases: ["Meta", "Llama"], orgNames: ["Meta Superintelligence Labs", "Meta AI", "Meta"], otherNames: ["AI at Meta", "Muse"] },
-  microsoft: { name: "Microsoft", displayTag: "Microsoft", aliases: ["Microsoft", "微软", "Copilot"], orgNames: ["Microsoft Research", "Microsoft AI", "Microsoft", "微软"] },
-  nvidia: { name: "NVIDIA", displayTag: null, aliases: ["NVIDIA", "英伟达"], orgNames: ["NVIDIA", "英伟达"] },
-  "hugging-face": { name: "Hugging Face", displayTag: "Hugging Face", aliases: ["Hugging Face"], orgNames: ["Hugging Face", "HuggingFace"] },
-  cursor: { name: "Cursor", displayTag: null, aliases: ["Cursor", "Anysphere"], orgNames: ["Cursor"] },
-  openrouter: { name: "OpenRouter", displayTag: null, aliases: ["OpenRouter"], orgNames: ["OpenRouter"] },
+  moe: { name: "教育部", displayTag: "教育部", aliases: ["教育部", "Ministry of Education", "教育部办公厅"], orgNames: ["教育部", "中华人民共和国教育部", "教育部办公厅", "教育部职业教育与成人教育司"], otherNames: ["微言教育", "职成司"] },
+  mohrss: { name: "人社部", displayTag: null, aliases: ["人社部", "人力资源和社会保障部", "人力资源社会保障部"], orgNames: ["人力资源和社会保障部", "人力资源社会保障部", "人社部"] },
+  unesco: { name: "联合国教科文组织", displayTag: null, aliases: ["UNESCO", "联合国教科文组织", "联合国教科文"], orgNames: ["UNESCO", "联合国教科文组织"] },
+  tencent: { name: "腾讯", displayTag: "腾讯", aliases: ["腾讯", "Tencent"], orgNames: ["腾讯", "Tencent"], otherNames: ["腾讯教育", "腾讯云"] },
+  baidu: { name: "百度", displayTag: null, aliases: ["百度", "Baidu"], orgNames: ["百度", "Baidu"], otherNames: ["百度教育", "文心"] },
+  aliyun: { name: "阿里云", displayTag: null, aliases: ["阿里云", "阿里巴巴", "阿里"], orgNames: ["阿里巴巴", "阿里云", "Alibaba Cloud"], otherNames: ["钉钉", "钉钉教育", "通义"] },
+  huawei: { name: "华为", displayTag: null, aliases: ["华为", "Huawei", "华为云"], orgNames: ["华为", "Huawei"] },
+  iflytek: { name: "科大讯飞", displayTag: null, aliases: ["科大讯飞", "讯飞", "iFlytek"], orgNames: ["科大讯飞", "iFlytek"], otherNames: ["讯飞教育"] },
+  xiandao: { name: "新道科技", displayTag: null, aliases: ["新道科技", "新道"], orgNames: ["新道科技", "新道"] },
+  zhihuishu: { name: "智慧树", displayTag: null, aliases: ["智慧树", "Zhihuishu"], orgNames: ["智慧树"] },
+  chaoxing: { name: "超星", displayTag: null, aliases: ["超星", "学习通", "Chaoxing"], orgNames: ["超星", "超星集团"] },
 };
 
 /**
- * 身份词典：摘要和标题里出现的公司，必须在原文里也出现过，否则退回原标题、丢掉摘要（防止模型张冠李戴）。
+ * 身份词典：摘要和标题里出现的机构，必须在原文里也出现过，否则退回原标题、丢掉摘要（防止模型张冠李戴）。
  * 行业没有这个问题时可以留空数组。
  */
 export const IDENTITY_LEXICON: ReadonlyArray<{ id: string; name: string; patterns: RegExp[] }> = [
-  { id: "openai", name: "OpenAI", patterns: [/openai|chatgpt|\bgpt-?[o\d]|\bsora\b|\bcodex\b/i] },
-  { id: "anthropic", name: "Anthropic", patterns: [/anthropic|\bclaude\b/i, /\b(?:opus|sonnet|haiku)\s*\d+(?:[.\-]\d+)*\b/i, /\bfable\s*\d+(?:[.\-]\d+)*\b|\bmythos\b/i] },
-  { id: "google", name: "Google / Gemini", patterns: [/google|deepmind|\bgemini\b|notebooklm|\bveo\s?\d|\bAlphaFold\b|\bAMIE\b/i] },
-  { id: "deepseek", name: "DeepSeek", patterns: [/deepseek|深度求索/i] },
-  { id: "xai", name: "xAI / Grok", patterns: [/\bxai\b|\bgrok\b/i] },
-  { id: "meta", name: "Meta / Llama", patterns: [/\bMeta\b/, /\bmeta\s?ai\b|\bllama\b/i] },
-  { id: "microsoft", name: "Microsoft / Copilot", patterns: [/microsoft|copilot|微软/i] },
-  { id: "nvidia", name: "NVIDIA", patterns: [/nvidia|英伟达|\bnemotron\b|\bnemo\b|\bblackwell\b|\brubin(?:\s+ultra)?\b|\bcuda\b/i] },
-  { id: "qwen", name: "千问 Qwen", patterns: [/\bqwen|通义|千问/i] },
-  { id: "hugging-face", name: "Hugging Face", patterns: [/hugging\s?face/i] },
-  { id: "cursor", name: "Cursor", patterns: [/\bCursor\b/] },
-  { id: "kimi", name: "Kimi / 月之暗面", patterns: [/\bkimi\b|月之暗面|\bmoonshot\s?ai\b/i] },
-  { id: "openrouter", name: "OpenRouter", patterns: [/openrouter/i] },
-  { id: "minimax", name: "MiniMax", patterns: [/minimax/i] },
-  { id: "zhipu", name: "智谱 GLM", patterns: [/智谱|\bglm-?[4-9]/i] },
-  { id: "hunyuan", name: "腾讯混元", patterns: [/混元|hunyuan/i] },
-  { id: "doubao", name: "字节豆包", patterns: [/豆包|doubao|字节跳动|bytedance/i] },
-  { id: "mistral", name: "Mistral", patterns: [/mistral/i] },
-  { id: "perplexity", name: "Perplexity", patterns: [/\bPerplexity\b/] },
-  { id: "runway", name: "Runway", patterns: [/\brunway\b/i] },
-  { id: "suno", name: "Suno", patterns: [/\bsuno\b/i] },
-  { id: "midjourney", name: "Midjourney", patterns: [/midjourney/i] },
-  { id: "stability-ai", name: "Stability AI", patterns: [/stability\s?ai/i] },
-  { id: "elevenlabs", name: "ElevenLabs", patterns: [/eleven\s?labs/i] },
-  { id: "vllm", name: "vLLM", patterns: [/\bvllm\b/i] },
-  { id: "ollama", name: "Ollama", patterns: [/\bollama\b/i] },
-  { id: "windsurf", name: "Windsurf", patterns: [/windsurf/i] },
-  { id: "devin", name: "Devin", patterns: [/\bdevin\b/i] },
-  { id: "manus", name: "Manus", patterns: [/\bmanus\b/i] },
-  { id: "apple", name: "Apple AI", patterns: [/\bapple\s?(intelligence|silicon|ai)\b|苹果(智能|\s?AI)/i] },
-  { id: "amazon", name: "Amazon / AWS", patterns: [/amazon|\baws\b|亚马逊/i] },
-  { id: "baidu", name: "百度文心", patterns: [/百度|baidu|文心|\bernie\s?bot\b/i] },
+  { id: "moe", name: "教育部", patterns: [/教育部|\bMinistry of Education\b/i, /职业教育与成人教育司|职成司/] },
+  { id: "mohrss", name: "人社部", patterns: [/人力资源和社会保障部|人力资源社会保障部|人社部/] },
+  { id: "unesco", name: "联合国教科文组织", patterns: [/\bUNESCO\b|联合国教科文/] },
+  { id: "tencent", name: "腾讯", patterns: [/腾讯|tencent/i] },
+  { id: "baidu", name: "百度", patterns: [/百度|baidu/i] },
+  { id: "aliyun", name: "阿里云", patterns: [/阿里云|阿里巴巴|\bali\b|钉钉|通义/i] },
+  { id: "huawei", name: "华为", patterns: [/华为|huawei/i] },
+  { id: "iflytek", name: "科大讯飞", patterns: [/科大讯飞|讯飞|iflytek/i] },
+  { id: "xiandao", name: "新道科技", patterns: [/新道科技|新道/] },
+  { id: "zhihuishu", name: "智慧树", patterns: [/智慧树/] },
+  { id: "chaoxing", name: "超星", patterns: [/超星|学习通/] },
 ];
 
-/** 这些域名上的文章，发布方就是对应的公司（托管平台如 GitHub、arXiv 不算）。 */
+/** 这些域名上的文章，发布方就是对应的机构（托管平台不算）。 */
 export const PUBLISHER_DOMAINS: ReadonlyArray<{ entityId: string; domains: readonly string[] }> = [
-  { entityId: "openai", domains: ["openai.com"] },
-  { entityId: "anthropic", domains: ["anthropic.com", "claude.com"] },
-  { entityId: "google", domains: ["deepmind.google", "ai.google", "blog.google"] },
-  { entityId: "deepseek", domains: ["deepseek.com"] },
-  { entityId: "xai", domains: ["x.ai"] },
-  { entityId: "meta", domains: ["ai.meta.com"] },
-  { entityId: "microsoft", domains: ["microsoft.com"] },
-  { entityId: "nvidia", domains: ["nvidia.com"] },
-  { entityId: "qwen", domains: ["qwen.ai"] },
-  { entityId: "cursor", domains: ["cursor.com"] },
-  { entityId: "openrouter", domains: ["openrouter.ai"] },
+  { entityId: "moe", domains: ["moe.gov.cn"] },
+  { entityId: "mohrss", domains: ["mohrss.gov.cn"] },
+  { entityId: "tencent", domains: ["tencent.com"] },
+  { entityId: "baidu", domains: ["baidu.com"] },
+  { entityId: "aliyun", domains: ["aliyun.com", "alibaba.com"] },
+  { entityId: "huawei", domains: ["huawei.com"] },
+  { entityId: "iflytek", domains: ["iflytek.com"] },
 ];
 
-/** 原文里的这些写法也算提到了对应公司。 */
+/** 原文里的这些写法也算提到了对应机构。 */
 export const IDENTITY_CONTEXT_ALIASES: ReadonlyArray<{ entityId: string; pattern: RegExp }> = [
-  { entityId: "meta", pattern: /@AIatMeta\b/i },
-  { entityId: "zhipu", pattern: /\bZhipu(?:\s+AI\b|['’]s\b)/i },
+  { entityId: "moe", pattern: /微言教育/ },
+  { entityId: "aliyun", pattern: /钉钉(?:教育)?/ },
 ];

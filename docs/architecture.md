@@ -44,7 +44,7 @@ flowchart LR
 | `site/` | 这个站自己的：站名文案、每一步的模型、品牌与 Logo、条款页、网站根目录的四个固定文件（`public/`，替换占位符后发布）、更新日志，以及启用哪些模块（`site/modules/`） |
 | `industry/` | 行业包：分类标签、主题、示范信源、提示词、门槛 |
 | `modules/` | 只属于这个站的功能，一个功能一个文件夹（见下文“模块”）；框架本身不带模块 |
-| `packages/backend/src/sources/` | 六种信源的读取器，抓取调度（`collect.ts`） |
+| `packages/backend/src/sources/` | 七种信源的读取器，抓取调度（`collect.ts`） |
 | `packages/backend/src/content/` | 资料入库、判重、正文提取和清洗 |
 | `packages/backend/src/editorial/` | 判断与写作：`analyze.ts`（流程）、`prompts.ts`（读提示词）、`models.ts`（每一步用哪个模型） |
 | `packages/backend/src/events/` | 事件归组、热度、事件综述 |

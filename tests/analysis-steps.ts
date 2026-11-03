@@ -13,7 +13,9 @@ const BY_SYSTEM = new Map<string, AnalysisStep>([
 
 /** The step of a chat request, from its body as the provider receives it; the title/summary prompt comes without a system message. */
 export function analysisStep(body: string): AnalysisStep {
-  const { messages } = JSON.parse(body) as { messages: Array<{ role: string; content: unknown }> };
+  const { messages, questions } = JSON.parse(body) as { messages: Array<{ role: string; content: unknown }>; questions?: Record<string, unknown> };
+  if (questions?.label) return "prefilter";
+  if (questions?.itemType && questions.finalCap) return "score";
   if (messages[0]?.role !== "system") return "summarize";
   const step = BY_SYSTEM.get(String(messages[0].content));
   if (!step) throw new Error(`not a request of the article analysis: ${String(messages[0].content).slice(0, 80)}`);

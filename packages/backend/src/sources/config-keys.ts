@@ -18,6 +18,13 @@ const KEYS: Record<SourceRow["kind"], string[]> = {
     "titlePaths", "summaryPaths", "summaryIsBody", "authorPaths", "publishedAtPath", "publishedAtUnit", "publishedAtUtcOffset", "externalIdPath",
     "urlTemplate", "urlTemplateFallback", "rawDropKeys", "requireBoolean", "minNumeric",
   ],
+  // A paid search: one query per run, and the caller reads the body to date the result. No
+  // publishedAfter (a search result has no date yet, so the boundary would drop every entry and
+  // silently collect nothing) and no detail (the date comes from extraction, not a listing read).
+  web_search: [
+    ...PUBLISHER, "_aihot", "ingestNoiseFilter", "itemUrlPrefixRewrite", "allowUrlPrefixes", "denyUrlPrefixes",
+    "publishedAtUtcOffset", "acceptLanguage", "query", "lang", "region", "limit",
+  ],
   // X accounts are mostly read in shards, which apply only these.
   x_search: [...PUBLISHER, "_aihot", "ingestNoiseFilter", "itemUrlPrefixRewrite", "query", "searchType"],
   mp_account: [...PUBLISHER, "wxid", "ghid", "nickname"],

@@ -2,215 +2,344 @@
   "$comment": "示范信源：首次启动时导入（scripts/seed.ts），已存在的不会被覆盖。之后在后台“信源”里新建、修改和暂停。字段说明见 docs/customize.md。",
   "sources": [
     {
-      "id": "rss-openai-news",
-      "name": "OpenAI News",
-      "kind": "rss",
+      "id": "weblist-chinazy-news",
+      "name": "中国职业技术教育网 · 新闻资讯",
+      "kind": "web_list",
       "config": {
-        "feedUrl": "https://openai.com/news/rss.xml",
+        "url": "https://www.chinazy.org/xwzx.htm",
+        "parseMode": "html",
+        "itemSelector": ".list-con-r li:has(a[title])",
+        "titleSelector": "a[title] > :not(span)",
+        "linkSelector": "a[title]",
+        "publishedAtSelector": ".rq, a[title] > span",
+        "allowUrlPrefixes": [
+          "https://www.chinazy.org/info/"
+        ],
+        "detail": {
+          "maxFetches": 5,
+          "publishedAtSelector": ".nrzj .xx"
+        },
         "_aihot": {
           "initialBackfillLimit": 8
         }
       },
-      "tier": "T1",
-      "owner_entity_id": "openai",
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-google-deepmind",
-      "name": "Google DeepMind",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://deepmind.google/blog/rss.xml",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": "google",
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-google-research",
-      "name": "Google Research",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://research.google/blog/rss/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": "google",
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方",
-        "研究"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-hugging-face",
-      "name": "Hugging Face Blog",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://huggingface.co/blog/feed.xml",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": "hugging-face",
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方",
-        "开源"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-microsoft-research",
-      "name": "Microsoft Research",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://www.microsoft.com/en-us/research/feed/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": "microsoft",
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方",
-        "研究"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-nvidia-blog",
-      "name": "NVIDIA Blog",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://blogs.nvidia.com/feed/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": "nvidia",
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-aws-ml",
-      "name": "AWS Machine Learning Blog",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://aws.amazon.com/blogs/machine-learning/feed/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方",
-        "教程"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-github-ai",
-      "name": "GitHub Blog · AI & ML",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://github.blog/ai-and-ml/feed/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-mistral",
-      "name": "Mistral AI",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://mistral.ai/news/rss",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 120,
-      "tags": [
-        "官方"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-bair",
-      "name": "Berkeley AI Research",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://bair.berkeley.edu/blog/feed.xml",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T1",
+      "tier": "T1_5",
       "owner_entity_id": null,
       "participation_mode": "editorial",
       "interval_minutes": 180,
       "tags": [
-        "研究"
+        "准官方",
+        "职教"
       ],
       "site_fulltext": false,
       "syndicate_fulltext": false
     },
     {
-      "id": "rss-the-verge-ai",
-      "name": "The Verge · AI",
+      "id": "weblist-chinazy-policy",
+      "name": "中国职业技术教育网 · 政策法规",
+      "kind": "web_list",
+      "config": {
+        "url": "https://www.chinazy.org/zcfg.htm",
+        "parseMode": "html",
+        "itemSelector": ".list-con-r li:has(a[title])",
+        "titleSelector": "a[title] > :not(span)",
+        "linkSelector": "a[title]",
+        "publishedAtSelector": ".rq, a[title] > span",
+        "allowUrlPrefixes": [
+          "https://www.chinazy.org/info/"
+        ],
+        "detail": {
+          "maxFetches": 5,
+          "publishedAtSelector": ".nrzj .xx"
+        },
+        "_aihot": {
+          "initialBackfillLimit": 8
+        }
+      },
+      "tier": "T1_5",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 240,
+      "tags": [
+        "准官方",
+        "政策"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "weblist-jzw-info-notices",
+      "name": "教育部职业院校信息化教学指导委员会 · 通知公告",
+      "kind": "web_list",
+      "config": {
+        "url": "https://xxhjzw.czit.edu.cn/tzgg.htm",
+        "parseMode": "html",
+        "itemSelector": "div.lm_list ul li",
+        "linkSelector": "a[href]",
+        "titleSelector": "a[href]",
+        "publishedAtSelector": "span",
+        "allowUrlPrefixes": [
+          "https://xxhjzw.czit.edu.cn/info/"
+        ],
+        "_aihot": {
+          "initialBackfillLimit": 8
+        }
+      },
+      "tier": "T1_5",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 180,
+      "tags": [
+        "准官方",
+        "职教",
+        "信息化"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "weblist-moe-news",
+      "name": "教育部政府门户 · 新闻发布",
+      "kind": "web_list",
+      "config": {
+        "url": "https://www.moe.gov.cn/jyb_xwfb/",
+        "baseUrl": "https://www.moe.gov.cn/jyb_xwfb/",
+        "parseMode": "html",
+        "itemSelector": "li:has(a[title])",
+        "linkSelector": "a[title]",
+        "titleSelector": "a[title] > :not(span)",
+        "publishedAtSelector": "span",
+        "publishedAtUtcOffset": "+08:00",
+        "allowUrlPrefixes": [
+          "https://www.moe.gov.cn/jyb_xwfb/gzdt_gzdt/",
+          "https://www.moe.gov.cn/jyb_xwfb/s271/",
+          "https://www.moe.gov.cn/jyb_xwfb/s5147/",
+          "https://www.moe.gov.cn/jyb_xwfb/s5148/",
+          "https://www.moe.gov.cn/jyb_xwfb/s6192/",
+          "https://www.moe.gov.cn/jyb_xwfb/xw_ggqy/",
+          "https://www.moe.gov.cn/fbh/live/"
+        ],
+        "detail": {
+          "maxFetches": 5,
+          "publishedAtSelector": ".moe-detail-shuxing"
+        },
+        "_aihot": {
+          "initialBackfillLimit": 8
+        }
+      },
+      "tier": "T1",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 30,
+      "tags": [
+        "教育部",
+        "政策"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "weblist-moe-xxh-policy",
+      "name": "教育部 · 教育信息化政策文件",
+      "kind": "web_list",
+      "config": {
+        "url": "https://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_jyxxh/jyxxh_xxh/xxh_xgzc/",
+        "baseUrl": "https://www.moe.gov.cn/jyb_xxgk/xxgk/neirong/fenlei/sxml_jyxxh/jyxxh_xxh/xxh_xgzc/",
+        "parseMode": "html",
+        "itemSelector": "dl#list > dd",
+        "linkSelector": "a[title]",
+        "titleSelector": "a[title] > :not(span)",
+        "publishedAtSelector": ".x_gkndbg_pcdate",
+        "publishedAtUtcOffset": "+08:00",
+        "allowUrlPrefixes": [
+          "https://www.moe.gov.cn/srcsite/A16/s3342/"
+        ],
+        "detail": {
+          "maxFetches": 5
+        },
+        "_aihot": {
+          "initialBackfillLimit": 8
+        }
+      },
+      "tier": "T1",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 1440,
+      "tags": [
+        "教育部",
+        "教育信息化",
+        "政策"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "json-govcn-policy-latest",
+      "name": "中国政府网 · 政策最新",
+      "kind": "json_list",
+      "config": {
+        "url": "https://www.gov.cn/zhengce/zuixin/ZUIXINZHENGCE.json",
+        "titlePaths": [
+          "TITLE"
+        ],
+        "urlTemplate": "{raw:URL}",
+        "publishedAtPath": "DOCRELPUBTIME",
+        "publishedAtUtcOffset": "+08:00",
+        "sortByPublishedAt": true,
+        "allowUrlPrefixes": [
+          "https://www.gov.cn/zhengce/"
+        ],
+        "detail": {
+          "maxFetches": 5
+        },
+        "_aihot": {
+          "initialBackfillLimit": 8
+        }
+      },
+      "tier": "T1",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 1440,
+      "tags": [
+        "国务院",
+        "政策"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "weblist-aliyun-dev-feed",
+      "name": "阿里云开发者社区 · 文章推荐",
+      "kind": "web_list",
+      "config": {
+        "url": "https://developer.aliyun.com/",
+        "parseMode": "html",
+        "itemSelector": ".new-index-feed-list .feed-item",
+        "linkSelector": "a.feed-item-content-title",
+        "titleSelector": "a.feed-item-content-title h4",
+        "publishedAtRegex": "data-gmt=\"([^\"]+)\"",
+        "allowUrlPrefixes": [
+          "https://developer.aliyun.com/article/"
+        ],
+        "sortByPublishedAt": true,
+        "_aihot": {
+          "initialBackfillLimit": 8
+        }
+      },
+      "tier": "T2",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 1440,
+      "tags": [
+        "教程",
+        "阿里云"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "weblist-tencent-cloud-dev",
+      "name": "腾讯云开发者社区 · 首页推荐",
+      "kind": "web_list",
+      "config": {
+        "url": "https://cloud.tencent.com/developer",
+        "parseMode": "html",
+        "itemSelector": ".cdc-article-panel-response2",
+        "linkSelector": "a.cdc-article-panel-response2__title",
+        "titleSelector": ".cdc-article-panel-response2__title-text",
+        "publishedAtSelector": ".cdc-article-panel-response2__date",
+        "allowUrlPrefixes": [
+          "https://cloud.tencent.com/developer/article/"
+        ],
+        "sortByPublishedAt": true,
+        "_aihot": {
+          "initialBackfillLimit": 8
+        }
+      },
+      "tier": "T2",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 1440,
+      "tags": [
+        "教程",
+        "腾讯云"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "weblist-zhipu-bigmodel-changelog",
+      "name": "智谱 AI 开放平台 · 模型与产品发布记录",
+      "kind": "web_list",
+      "config": {
+        "url": "https://docs.bigmodel.cn/cn/update/new-releases",
+        "parseMode": "html",
+        "itemSelector": "div.update[id]",
+        "linkSelector": "a[aria-label^='Navigate to changelog']",
+        "titleSelector": "[data-component-part='update-description']",
+        "publishedAtSelector": "[data-component-part='update-label']",
+        "preserveUrlFragment": true,
+        "allowUrlPrefixes": [
+          "https://docs.bigmodel.cn/cn/update/new-releases"
+        ],
+        "_aihot": {
+          "initialBackfillLimit": 1
+        }
+      },
+      "tier": "T2",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 1440,
+      "tags": [
+        "厂商",
+        "智谱"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "weblist-kimi-research-blog",
+      "name": "月之暗面 Kimi · 研究博客",
+      "kind": "web_list",
+      "config": {
+        "url": "https://www.kimi.com/blog/",
+        "parseMode": "html",
+        "itemSelector": "div.menu-card",
+        "linkSelector": "a[href]",
+        "titleSelector": "h4.card-title",
+        "publishedAtSelector": "p.card-date",
+        "allowUrlPrefixes": [
+          "https://www.kimi.com/blog/",
+          "https://www.kimi.com/en/blog/"
+        ],
+        "itemUrlPrefixRewrite": {
+          "from": "https://www.kimi.com/en/blog/",
+          "to": "https://www.kimi.com/blog/"
+        },
+        "_aihot": {
+          "initialBackfillLimit": 8
+        }
+      },
+      "tier": "T2",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 1440,
+      "tags": [
+        "厂商",
+        "月之暗面"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-qbitai",
+      "name": "量子位",
       "kind": "rss",
       "config": {
-        "feedUrl": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+        "feedUrl": "https://www.qbitai.com/feed",
+        "detail": {
+          "maxFetches": 5
+        },
         "_aihot": {
           "initialBackfillLimit": 8
         }
@@ -220,57 +349,21 @@
       "participation_mode": "editorial",
       "interval_minutes": 60,
       "tags": [
-        "媒体"
+        "媒体",
+        "AI"
       ],
       "site_fulltext": false,
       "syndicate_fulltext": false
     },
     {
-      "id": "rss-techcrunch-ai",
-      "name": "TechCrunch · AI",
+      "id": "rss-36kr",
+      "name": "36氪",
       "kind": "rss",
       "config": {
-        "feedUrl": "https://techcrunch.com/category/artificial-intelligence/feed/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T2",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 60,
-      "tags": [
-        "媒体"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-ars-technica-ai",
-      "name": "Ars Technica · AI",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://arstechnica.com/ai/feed/",
-        "_aihot": {
-          "initialBackfillLimit": 8
-        }
-      },
-      "tier": "T2",
-      "owner_entity_id": null,
-      "participation_mode": "editorial",
-      "interval_minutes": 60,
-      "tags": [
-        "媒体"
-      ],
-      "site_fulltext": false,
-      "syndicate_fulltext": false
-    },
-    {
-      "id": "rss-mit-tech-review-ai",
-      "name": "MIT Technology Review · AI",
-      "kind": "rss",
-      "config": {
-        "feedUrl": "https://www.technologyreview.com/topic/artificial-intelligence/feed",
+        "feedUrl": "https://www.36kr.com/feed",
+        "detail": {
+          "maxFetches": 5
+        },
         "_aihot": {
           "initialBackfillLimit": 8
         }
@@ -280,17 +373,50 @@
       "participation_mode": "editorial",
       "interval_minutes": 120,
       "tags": [
-        "媒体"
+        "媒体",
+        "科技"
       ],
       "site_fulltext": false,
       "syndicate_fulltext": false
     },
     {
-      "id": "rss-the-decoder",
-      "name": "The Decoder",
+      "id": "weblist-aibase",
+      "name": "AIbase · AI 资讯",
+      "kind": "web_list",
+      "config": {
+        "url": "https://news.aibase.com/zh/news",
+        "parseMode": "html",
+        "itemSelector": "a[href^=\"/zh/news/\"]",
+        "titleSelector": ".font600",
+        "publishedAtUtcOffset": "+08:00",
+        "allowUrlPrefixes": [
+          "https://news.aibase.com/zh/news/"
+        ],
+        "detail": {
+          "maxFetches": 8,
+          "publishedAtRegex": "(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})"
+        },
+        "_aihot": {
+          "initialBackfillLimit": 8
+        }
+      },
+      "tier": "T2",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 120,
+      "tags": [
+        "媒体",
+        "AI资讯"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "rss-jiemodui",
+      "name": "芥末堆",
       "kind": "rss",
       "config": {
-        "feedUrl": "https://the-decoder.com/feed/",
+        "feedUrl": "https://www.jiemodui.com/feed",
         "_aihot": {
           "initialBackfillLimit": 8
         }
@@ -306,62 +432,101 @@
       "syndicate_fulltext": false
     },
     {
-      "id": "rss-simon-willison",
-      "name": "Simon Willison",
-      "kind": "rss",
+      "id": "websearch-ai-edu-policy",
+      "name": "网页搜索 · AI 赋能教育政策",
+      "kind": "web_search",
       "config": {
-        "feedUrl": "https://simonwillison.net/atom/everything/",
+        "query": "人工智能赋能教育教学改革 政策",
+        "lang": "zh-CN",
+        "region": "CN",
+        "limit": 10,
         "_aihot": {
-          "initialBackfillLimit": 8
+          "initialBackfillLimit": 10
         }
       },
       "tier": "T2",
       "owner_entity_id": null,
       "participation_mode": "editorial",
-      "interval_minutes": 120,
+      "interval_minutes": 1440,
       "tags": [
-        "个人"
+        "搜索",
+        "职教",
+        "政策"
       ],
       "site_fulltext": false,
       "syndicate_fulltext": false
     },
     {
-      "id": "rss-import-ai",
-      "name": "Import AI",
-      "kind": "rss",
+      "id": "websearch-college-practice",
+      "name": "网页搜索 · 院校 AI 教学实践",
+      "kind": "web_search",
       "config": {
-        "feedUrl": "https://importai.substack.com/feed",
+        "query": "高职院校 人工智能 教学改革 案例",
+        "lang": "zh-CN",
+        "region": "CN",
+        "limit": 10,
         "_aihot": {
-          "initialBackfillLimit": 8
+          "initialBackfillLimit": 10
         }
       },
       "tier": "T2",
       "owner_entity_id": null,
       "participation_mode": "editorial",
-      "interval_minutes": 180,
+      "interval_minutes": 1440,
       "tags": [
-        "个人",
-        "周刊"
+        "搜索",
+        "职教",
+        "院校"
       ],
       "site_fulltext": false,
       "syndicate_fulltext": false
     },
     {
-      "id": "rss-latent-space",
-      "name": "Latent Space",
-      "kind": "rss",
+      "id": "websearch-program-curriculum",
+      "name": "网页搜索 · AI 专业与课程建设",
+      "kind": "web_search",
       "config": {
-        "feedUrl": "https://www.latent.space/feed",
+        "query": "职业院校 人工智能 专业建设 课程改革",
+        "lang": "zh-CN",
+        "region": "CN",
+        "limit": 10,
         "_aihot": {
-          "initialBackfillLimit": 8
+          "initialBackfillLimit": 10
         }
       },
       "tier": "T2",
       "owner_entity_id": null,
       "participation_mode": "editorial",
-      "interval_minutes": 180,
+      "interval_minutes": 1440,
       "tags": [
-        "个人"
+        "搜索",
+        "职教",
+        "课程"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "websearch-teacher-dev",
+      "name": "网页搜索 · 教师 AI 教学能力",
+      "kind": "web_search",
+      "config": {
+        "query": "职业院校 教师 人工智能 教学能力 培训",
+        "lang": "zh-CN",
+        "region": "CN",
+        "limit": 10,
+        "_aihot": {
+          "initialBackfillLimit": 10
+        }
+      },
+      "tier": "T2",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 1440,
+      "tags": [
+        "搜索",
+        "职教",
+        "教师"
       ],
       "site_fulltext": false,
       "syndicate_fulltext": false

@@ -84,8 +84,8 @@ node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl --split d
 
 上传多模型报告时，同一 `caseId` 在各模型下须使用相同的 `gold` 标注，模型的 `decision` 可以不同。标注冲突的报告会在写入前被拒绝，避免同一条资料在并排比较时出现不同的人工答案；不提供逐例 `cases` 的报告仍可导入。
 
-- 该选没选上，多半是评分标准里没说清它为什么重要：在 `selection-score.md` 里把这类价值写进“必须正常评价”的部分，给出例子。
-- 不该选却选上了，多半是噪声没压住：写进“必须压住”的部分。
+- 该选没选上，多半是评分标准里没说清它为什么重要：在 `selection-score.md` 引用的共同规则 `selection-score-rules.md` 里，把这类价值写进“必须正常评价”的部分，给出例子；chat 和 SystemOne 一起生效。
+- 不该选却选上了，多半是噪声没压住：在同一份共同规则里写进“必须压住”的部分。
 - 整体偏松或偏紧，而判错的条目分数都贴着门槛，再调 `industry/selection.ts` 的门槛。
 
 先改标准，再动门槛：门槛只能整体移动，解决不了“哪一类判错了”。每改一次跑一遍，SelectBench 里能看到每一版的对比。比较模型时不要只看有效输出 F1：如果覆盖率明显不同，还要一起看完整准确率；高分但经常无法完成结构化判断的模型，不应被失败样本从分母里“隐藏”掉。
@@ -93,3 +93,21 @@ node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl --split d
 ## 换模型
 
 后台“模型与评测”页能看到每一步当前用哪个模型、近期的成功率、耗时和 token 用量，也能直接切换（只影响之后的新任务）。换评分模型之前，先用 `--models` 在同一批样本上比一比。
+
+### SystemOne 决策评分
+
+`decision-model-preview` 通过 SystemOne 协议返回候选决策，不是生成式聊天模型。它只用于预筛与评分；在 `.env` 设置 `PREFILTER_MODEL=decision-model-preview`、`SCORE_MODEL=decision-model-preview`，或在后台分别切换这两个步骤。不能填到 `LLM_MODEL`，也不能用于标题摘要、结构化、归组、综述或翻译；这些步骤继续用原有生成式模型。`site/models.ts` 的 `DEFAULTS` 保持空，未主动选择时不改变部署行为。
+
+接入使用独立的 `SYSTEMONE_BASE_URL` 与 `SYSTEMONE_API_KEY`，北京基础地址为 `https://<WorkspaceId>.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`，实际请求端点在后面加 `/systemone`。新加坡工作空间用 `https://<WorkspaceId>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`，地域、工作空间和 key 要一致。不要为这个预设借用 `DASHSCOPE_API_KEY`：单独配置 `SYSTEMONE_API_KEY` 不会触发归组自动使用付费 embeddings。完整配置见 [改站指南](customize.md#systemone-决策模型可选) 和 `.env.example`。
+
+评分共用 `selection-score.md` 引用的 `selection-score-rules.md` 中的**内容类型、五轴评价和各类型权重**，并保留材料不足时的分数封顶、噪声压制与安全边界，不把结果简化成“是否入选”二选一。一次评分包含这些决策项；两次评分各自发出一次实际请求，不将一次评分结果复制成两次。两次之和、页面平均分与 `industry/selection.ts` 的现有门槛规则不变；不能凭模型名称或协议直接改权重、门槛。
+
+SystemOne 不返回生成式解释，预筛的 `reason` 留空，评分仍只产生整数分数；这不是“没有理由所以通过”，也不由其他模型补造评分理由。原始 `answers`（含 choice 与概率）及 `usage` 保存在回执中，运维可按后台内容诊断显示的回执编号核查，同时检查输出覆盖率与失败数。标题摘要和读者看到的推荐理由仍由写作步骤产生。
+
+先由使用者填好有效 key、确认后台 `dashscope` 预算，再做同批对比，例如：
+
+```bash
+node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl --models default,decision-model-preview --split development --label "SystemOne 同批对比"
+```
+
+这是付费请求路径的一次真实评测，不承诺免费或更准确；填写配置前并没有完成实测。与现有模型比较有效输出质量、覆盖率、完整准确率、耗时与回执用量，再决定是否切换；若要调权重或门槛，仍按前面的金标校准流程来。
