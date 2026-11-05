@@ -1,0 +1,19 @@
+{
+  "name": "@aihot/weread-mp",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./module.ts",
+    "./server": "./server.ts",
+    "./web": "./web.tsx"
+  },
+  "dependencies": {
+    "@aihot/api": "*",
+    "@aihot/backend": "*",
+    "@aihot/contracts": "*",
+    "@aihot/site": "*",
+    "cheerio": "1.2.0",
+    "zod": "4.6.5"
+  }
+}
