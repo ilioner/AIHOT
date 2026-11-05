@@ -278,8 +278,9 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
   const score = f.score === null || typeof f.score === "number" ? f.score : analysis?.score ?? null;
   const relevance = typeof f.relevance === "string" ? (f.relevance as string) : analysis?.relevance ?? null;
   const judgedSelected = typeof f.selected === "boolean" ? (f.selected as boolean) : analysis?.selected ?? null;
-  // Material from an isolated source reaches no public surface at all: not even a detail page.
-  const visibility = source.participation_mode === "isolated" ? "withdrawn" : (override?.visibility ?? "public");
+  // Isolated material and an effective BLOCK judgement reach no public surface, including detail
+  // pages. Changing visibility alone cannot turn an out-of-scope judgement into a relevant one.
+  const visibility = source.participation_mode === "isolated" || relevance === "block" ? "withdrawn" : (override?.visibility ?? "public");
 
   // An undated archive has a readable detail page, but its discovery is not a news timestamp.
   // Explicit imports can retain an editorial decision already published elsewhere.

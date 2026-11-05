@@ -343,6 +343,47 @@ test("item pages follow one rule: unsummarised editorial items keep one, hot_sig
   assert.ok(!storyPage.body.includes(signal) && !storyPage.body.includes(`SIGNAL-SUMMARY-${T}`), "and not the hot_signal one");
 });
 
+test("a relevance BLOCK removes an item from every public exit, regardless of source kind or visibility override", async () => {
+  for (const kind of ["rss", "mp_account", "web_list"]) {
+    const sourceId = `${SOURCE}-blocked-${kind}`;
+    await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, site_fulltext, syndicate_fulltext, next_fetch_at)
+              VALUES (${sourceId}, 'Blocked source', ${kind}, 'T1', 'editorial', true, true, '2100-01-01')`;
+    const id = await article();
+    await sql`UPDATE articles SET source_id = ${sourceId} WHERE id = ${id}`;
+    await publishArticle(id, released());
+    const detailUrl = `/api/site/items/${id}`;
+    const before = await get(detailUrl);
+    assert.equal(before.status, 200);
+    const title = JSON.parse(before.body).title;
+    await setVisibility(id, { visibility: "public", reason: "previously public", version: 0 }, "test");
+    await sql`UPDATE analyses SET relevance = 'block', selected = false WHERE article_id = ${id}`;
+    await publishArticle(id);
+
+    for (const path of [detailUrl, `/api/v1/items/${id}`, `/items/${id}/markdown`, `/og/items/${id}.png`, `/og/posters/${id}.png`]) {
+      assert.equal((await get(path)).status, 404, `${kind}: ${path}`);
+    }
+    assert.equal((await get(detailUrl, { "if-none-match": before.etag! })).status, 404, "a previous validator cannot retain blocked content");
+    assert.equal(await loadItemShare(id), null);
+    const availability = JSON.parse((await get(`/api/site/items/availability?ids=${id}`)).body);
+    assert.equal(availability[id].status, "unavailable");
+    for (const path of [
+      `/api/v1/items?mode=all&q=${encodeURIComponent(title)}`,
+      "/api/v1/selected/snapshot?fields=minimal&limit=1000",
+      "/feed.xml", "/feed/all.xml",
+    ]) {
+      assert.ok(!(await get(path)).body.includes(id), `${kind}: ${path} still lists blocked content`);
+    }
+    assert.equal((await sql`SELECT count(*)::int AS n FROM articles WHERE id = ${id}`)[0]!.n, 1, "the original remains available for admin diagnosis");
+
+    await sql`UPDATE analyses SET relevance = 'pass', selected = false WHERE article_id = ${id}`;
+    await publishArticle(id);
+    assert.equal((await get(detailUrl)).status, 200, "a corrected relevance judgement restores the page");
+    await setVisibility(id, { visibility: "withdrawn", reason: "editor withdrawal", version: 1 }, "test");
+    await publishArticle(id);
+    assert.equal((await get(detailUrl)).status, 404, "an explicit editorial withdrawal remains authoritative");
+  }
+});
+
 test("unresolved selection does not delay a withdrawal or its sync watermark", async () => {
   const x = await article();
   await publishArticle(x, released());
