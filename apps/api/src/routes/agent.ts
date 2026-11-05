@@ -2,7 +2,7 @@
 // errors are the usual v1 Problem JSON. New abilities become new addresses listed in the guide, which
 // agents read without updating.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { PUBLIC_API_CATEGORY_KEYS, type PublicApiCategoryKey } from "@aihot/contracts/taxonomy";
+import { loadCategories } from "@aihot/backend/publication/categories";
 import { isValidDate } from "@aihot/contracts/time";
 import { agentGuide, dailyAnswer, hotAnswer, latestAnswer, periodAnswer, searchAnswer, searchItems, storyAnswer } from "@aihot/backend/publication/agent";
 import { v1Items } from "@aihot/backend/publication/v1";
@@ -10,7 +10,7 @@ import { resolveStory, v1HotTopics, v1Story } from "@aihot/backend/publication/s
 import { dailyWithNotes, isPeriodKey, v1Period } from "@aihot/backend/publication/reports";
 import { requestNotice, serverModules } from "@aihot/backend/modules";
 import { QueryError, sendProblem, sendTextWithEtag, strictQuery } from "../http/respond.ts";
-import { enumParam, intParam, publicHandler, V1_OPERATIONS } from "./v1.ts";
+import { categoryParam, enumParam, intParam, publicHandler, V1_OPERATIONS } from "./v1.ts";
 
 function markdown(req: FastifyRequest, reply: FastifyReply, text: string, etagPrefix: string, cacheControl: string) {
   // A module's reminder for the person behind the request closes the answer.
@@ -19,10 +19,10 @@ function markdown(req: FastifyRequest, reply: FastifyReply, text: string, etagPr
   return sendTextWithEtag(req, reply, text, { etagPrefix, cacheControl, contentType: "text/markdown; charset=utf-8" });
 }
 
-function listParams(q: Record<string, string>) {
+function listParams(q: Record<string, string>, categories: Awaited<ReturnType<typeof loadCategories>>) {
   return {
     window: enumParam(q.window, "window", ["24h", "7d"] as const, "24h"),
-    category: q.category === undefined ? null : enumParam<PublicApiCategoryKey>(q.category, "category", PUBLIC_API_CATEGORY_KEYS, PUBLIC_API_CATEGORY_KEYS[0]),
+    category: categoryParam(q.category, categories),
     limit: intParam(q.limit, "limit", 1, 30, 10),
   };
 }
@@ -31,23 +31,25 @@ export function registerAgent(app: FastifyInstance) {
   app.get("/api/v1/agent", publicHandler(async (req, reply) => {
     strictQuery(req, []);
     // Cached like /openapi-v1.json: agents learn a new ability within minutes of its release.
-    return markdown(req, reply, agentGuide(), "agent-guide", "public, max-age=300, must-revalidate");
+    return markdown(req, reply, agentGuide(await loadCategories()), "agent-guide", "public, max-age=300, must-revalidate");
   }));
 
   app.get("/api/v1/agent/latest", publicHandler(async (req, reply) => {
     const q = strictQuery(req, ["window", "mode", "category", "limit"]);
-    const p = { ...listParams(q), mode: enumParam(q.mode, "mode", ["selected", "all"] as const, "selected") };
+    const categories = await loadCategories();
+    const p = { ...listParams(q, categories), mode: enumParam(q.mode, "mode", ["selected", "all"] as const, "selected") };
     const res = await v1Items({ ...p, by: "timeline", q: null, cursor: null });
-    return markdown(req, reply, latestAnswer(res, p), "agent-latest", V1_OPERATIONS.items.cacheControl);
+    return markdown(req, reply, latestAnswer(res, p, categories), "agent-latest", V1_OPERATIONS.items.cacheControl);
   }));
 
   app.get("/api/v1/agent/search", publicHandler(async (req, reply) => {
     const q = strictQuery(req, ["q", "window", "category", "limit"]);
     const text = (q.q ?? "").trim();
     if ([...text].length < 2 || [...text].length > 200) throw new QueryError("q must contain 2 to 200 characters.");
-    const p = { ...listParams(q), window: enumParam(q.window, "window", ["24h", "7d"] as const, "7d") };
+    const categories = await loadCategories();
+    const p = { ...listParams(q, categories), window: enumParam(q.window, "window", ["24h", "7d"] as const, "7d") };
     const found = await searchItems(text, p.window, p.category, p.limit);
-    return markdown(req, reply, searchAnswer(found, { q: text, window: p.window, category: p.category }), "agent-search", V1_OPERATIONS.items.cacheControl);
+    return markdown(req, reply, searchAnswer(found, { q: text, window: p.window, category: p.category }, categories), "agent-search", V1_OPERATIONS.items.cacheControl);
   }));
 
   app.get("/api/v1/agent/hot", publicHandler(async (req, reply) => {

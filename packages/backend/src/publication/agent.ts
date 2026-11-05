@@ -3,9 +3,8 @@
 // question, how it reads and what to tell the user are decided here, on the server. Programs keep
 // reading the v1 JSON, whose fields do not change.
 import { ACCESS, EDITION_WHEN, ITEM_COPY, POLICY, SITE, subjectAfter } from "@aihot/site";
-import { CATEGORIES } from "@aihot/industry/taxonomy";
 import { MCP_TOOL_NAMES as T } from "@aihot/contracts/mcp";
-import { CATEGORY_LABELS, isCategoryKey, PUBLIC_API_CATEGORY_KEYS, toPublicApiCategory, type PublicApiCategoryKey } from "@aihot/contracts/taxonomy";
+import { DEFAULT_CATEGORIES, publicApiCategoryKeys, toPublicApiCategory, type CategoryDefinition, type PublicApiCategoryKey } from "@aihot/contracts/taxonomy";
 import { beijingDate, beijingTime, beijingWeekday } from "@aihot/contracts/time";
 import { serverModules } from "../modules.ts";
 import { siteUrl } from "./links.ts";
@@ -39,12 +38,12 @@ export function stamp(at: string | Date, now = Date.now()): string {
 }
 
 const linkText = (title: string) => title.replace(/([[\]])/g, "\\$1");
-const category = (key: string | null) => (key && isCategoryKey(key) ? CATEGORY_LABELS[key] : null);
+const category = (key: string | null, categories: readonly CategoryDefinition[]) => categories.find((c) => c.key === key)?.label ?? null;
 
-function itemLines(items: V1ItemPayload[]): string[] {
+function itemLines(items: V1ItemPayload[], categories: readonly CategoryDefinition[]): string[] {
   return items.flatMap((it, i) => [
     `${i + 1}. [${linkText(it.title)}](${it.links.aihot})`,
-    `   ${[publicSourceName(it.source.name), it.publishedAt ? `发布于 ${stamp(it.publishedAt)}` : `${SITE.name} 收录于 ${stamp(it.discoveredAt)}`, category(it.category)].filter(Boolean).join(" · ")}`,
+    `   ${[publicSourceName(it.source.name), it.publishedAt ? `发布于 ${stamp(it.publishedAt)}` : `${SITE.name} 收录于 ${stamp(it.discoveredAt)}`, category(it.category, categories)].filter(Boolean).join(" · ")}`,
     ...(it.summary ? [`   摘要：${it.summary}`] : []),
     ...(it.reason ? [`   ${ITEM_COPY.reasonLabel}：${it.reason}`] : []),
     `   原文：${it.links.original}`,
@@ -61,9 +60,9 @@ const BRIEF_HINTS = [
 
 export interface LatestQuery { window: AgentWindow; mode: "selected" | "all"; category: PublicApiCategoryKey | null; limit: number }
 
-export function latestAnswer(res: V1ItemsResult, q: LatestQuery): string {
+export function latestAnswer(res: V1ItemsResult, q: LatestQuery, categories: readonly CategoryDefinition[] = DEFAULT_CATEGORIES): string {
   const scope = q.mode === "selected" ? "精选" : "全部公开动态";
-  const title = [`${SITE.name} ${scope}`, category(q.category), WINDOW_ZH[q.window]].filter(Boolean).join(" · ");
+  const title = [`${SITE.name} ${scope}`, category(q.category, categories), WINDOW_ZH[q.window]].filter(Boolean).join(" · ");
   if (!res.items.length) {
     return answer([`# ${title}`, "", `${WINDOW_ZH[q.window]}没有符合条件的${scope}。`], null, [
       "如实告诉用户这段时间没有；可以换成 window=7d 或 mode=all 再查一次。",
@@ -71,7 +70,7 @@ export function latestAnswer(res: V1ItemsResult, q: LatestQuery): string {
     ]);
   }
   const more = res.page.hasMore ? (q.limit < 30 ? "后面还有，调大 limit（最多 30）可以多看。" : "后面还有，范围更大时请缩小到某个分类或关键词。") : "";
-  return answer([`# ${title}`, "", `${res.items.length} 条，从新到旧，时间为北京时间。${more}`], itemLines(res.items), BRIEF_HINTS);
+  return answer([`# ${title}`, "", `${res.items.length} 条，从新到旧，时间为北京时间。${more}`], itemLines(res.items, categories), BRIEF_HINTS);
 }
 
 /** Editorial picks first; only when they have nothing is the whole public pool searched (as MCP always did). */
@@ -82,8 +81,8 @@ export async function searchItems(q: string, window: AgentWindow, cat: PublicApi
   return { res: await load(query("all")), expanded: true };
 }
 
-export function searchAnswer(found: { res: V1ItemsResult; expanded: boolean }, q: { q: string; window: AgentWindow; category: PublicApiCategoryKey | null }): string {
-  const title = [`${SITE.name} 搜索「${q.q}」`, category(q.category), WINDOW_ZH[q.window]].filter(Boolean).join(" · ");
+export function searchAnswer(found: { res: V1ItemsResult; expanded: boolean }, q: { q: string; window: AgentWindow; category: PublicApiCategoryKey | null }, categories: readonly CategoryDefinition[] = DEFAULT_CATEGORIES): string {
+  const title = [`${SITE.name} 搜索「${q.q}」`, category(q.category, categories), WINDOW_ZH[q.window]].filter(Boolean).join(" · ");
   const { res, expanded } = found;
   if (!res.items.length) {
     return answer([`# ${title}`, "", `${WINDOW_ZH[q.window]}的精选和全部公开动态里都没有相关报道。`], null, [
@@ -93,7 +92,7 @@ export function searchAnswer(found: { res: V1ItemsResult; expanded: boolean }, q
     ]);
   }
   const scope = expanded ? "精选里没有，以下来自全部公开动态（没有进入精选）。" : `以下是 ${SITE.name} 精选里的相关报道。`;
-  return answer([`# ${title}`, "", `${scope}${res.items.length} 条，从新到旧，时间为北京时间。`], itemLines(res.items), [
+  return answer([`# ${title}`, "", `${scope}${res.items.length} 条，从新到旧，时间为北京时间。`], itemLines(res.items, categories), [
     `只根据这些结果回答：这是 ${SITE.name} 收录的相关报道，不是全网搜索，别说成“全网只有这些”。`,
     ...(expanded ? [`告诉用户这些没有进入 ${SITE.name} 精选。`] : []),
     ...BRIEF_HINTS.slice(1),
@@ -250,22 +249,23 @@ export function periodAnswer(r: PeriodReport, kind: "weekly" | "monthly", via: V
 
 
 /** The readable labels of the website categories published as one public category. */
-function publicCategoryName(key: PublicApiCategoryKey): string {
-  return CATEGORIES.filter((c) => toPublicApiCategory(c.key) === key).map((c) => c.label).join("与");
+function publicCategoryName(key: PublicApiCategoryKey, definitions: readonly CategoryDefinition[]): string {
+  return definitions.filter((c) => toPublicApiCategory(c.key, definitions) === key).map((c) => c.label).join("与");
 }
 
 /**
  * The page an agent reads to learn everything it can ask (GET /api/v1/agent). New abilities are added
  * here as new addresses; installed agents find them without an update.
  */
-export function agentGuide(): string {
+export function agentGuide(definitions: readonly CategoryDefinition[] = DEFAULT_CATEGORIES): string {
+  const keys = publicApiCategoryKeys(definitions);
   const u = agentUrl;
   const abilities = serverModules().flatMap((m) => m.agent?.abilities ?? []);
   const unavailable = serverModules().flatMap((m) => m.agent?.unavailable ?? []);
   const requests = serverModules().flatMap((m) => m.agent?.requests ?? []);
-  const categories = PUBLIC_API_CATEGORY_KEYS.map((key) => `${key}（${publicCategoryName(key)}）`);
+  const categories = keys.map((key) => `${key}（${publicCategoryName(key, definitions)}）`);
   // Examples use one of the site's configured public categories.
-  const sample = PUBLIC_API_CATEGORY_KEYS.at(-2) ?? PUBLIC_API_CATEGORY_KEYS[0];
+  const sample = keys.at(-2) ?? keys[0];
   const lines = [
     `# ${SITE.name} 使用说明（给 Agent）`,
     "",

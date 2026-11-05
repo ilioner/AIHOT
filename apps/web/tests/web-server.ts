@@ -9,6 +9,9 @@ import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 import type { DataRouter } from "react-router";
 import type { FeedItemSummary, SiteItemDetail } from "@aihot/contracts/site";
+import { DEFAULT_CATEGORIES } from "@aihot/contracts/taxonomy";
+
+export const fixtureCategories = DEFAULT_CATEGORIES.map(({ key, label, enabled, feedLabel }) => ({ key, label, enabled, feedLabel: feedLabel ?? label }));
 
 /** When the synthetic reports were published. */
 export const FIXTURE_AT = "2026-10-04T08:00:00.000Z";
@@ -17,7 +20,7 @@ export const FIXTURE_AT = "2026-10-04T08:00:00.000Z";
 export function feedItem(fields: Partial<FeedItemSummary> & Pick<FeedItemSummary, "id" | "title">): FeedItemSummary {
   return {
     summary: "固定摘要", reason: "固定推荐理由", source: { name: "Fixture" }, publishedAt: FIXTURE_AT, timelineAt: FIXTURE_AT,
-    category: "policy", tags: [], score: 80, selected: true, channel: "news", x: null, ...fields,
+    category: "policy", categoryLabel: "政策", tags: [], score: 80, selected: true, channel: "news", x: null, ...fields,
   };
 }
 
@@ -45,6 +48,7 @@ export function fakeApi(route: (url: URL, res: ServerResponse, req: IncomingMess
     if (res.writableEnded) return;
     if (body !== undefined) return res.end(JSON.stringify(body));
     if (url.pathname === "/api/site/meta") return res.end(JSON.stringify({ changelogVersion: "fixture" }));
+    if (url.pathname === "/api/site/categories") return res.end(JSON.stringify({ categories: fixtureCategories }));
     if (url.pathname === "/api/site/track") { res.statusCode = 204; return res.end(); }
     if (url.pathname === "/api/health") return res.end("{}");
     res.statusCode = 404;

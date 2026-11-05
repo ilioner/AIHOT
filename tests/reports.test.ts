@@ -11,6 +11,10 @@ import { publishArticle } from "@aihot/backend/publication/publish";
 import { loadReport } from "@aihot/backend/publication/reports";
 import { composeDaily, dueDaily, dueMonthly, dueWeekly } from "@aihot/backend/reports/compose";
 import { SITE } from "@aihot/site";
+import { updateCategories } from "@aihot/backend/admin/settings";
+import { loadCategories } from "@aihot/backend/taxonomy";
+import { DEFAULT_CATEGORIES } from "@aihot/contracts/taxonomy";
+import { arrangeDaily, reportSections, type EditionEntry } from "@aihot/backend/reports/edition";
 
 const T = tag();
 const SOURCE = `test-reports-${T}`;
@@ -56,4 +60,28 @@ test("a weekly that froze no summaries shows the articles' public summaries", as
   await sql`UPDATE sources SET tier = 'T1_5', first_party = true WHERE id = ${SOURCE}`;
   await publishArticle(articleId);
   assert.equal((await loadReport("weekly", WEEK))?.sections[0]?.items[0]?.firstParty, false);
+});
+
+test("runtime sections and commentary affect future arrangements, not saved issues", async () => {
+  const before = await sql`SELECT content, revision FROM reports WHERE kind = 'weekly' AND key = ${WEEK}`;
+  const extra = { key: "report-test", label: "报告测试", tag: "报告测试首标签", section: "新栏目", guide: "测试资料", tagColor: "gray", enabled: true, commentary: true };
+  const categories = [extra, ...[...DEFAULT_CATEGORIES].reverse().map(c => ({ ...c, section: `新版${c.section}` }))];
+  try {
+    await updateCategories({ categories, reason: "测试未来栏目" }, "test");
+    assert.deepEqual(await sql`SELECT content, revision FROM reports WHERE kind = 'weekly' AND key = ${WEEK}`, before);
+    const snapshot = await loadCategories();
+    const sections = reportSections(snapshot);
+    assert.equal(sections.order[0], "新栏目");
+    assert.equal(sections.sectionOf(extra.key), "新栏目");
+    assert.equal(sections.sectionOf("policy"), "新版政策文件");
+    const entry = (id: string, previous: EditionEntry["previous"]): EditionEntry => ({
+      category: extra.key, tags: [], storyId: null, mentions: new Set(), sourceIds: new Set([id]), authority: 0, importance: 80, previous,
+      entry: { itemId: id, factId: null, storyPublicId: null, title: id, summary: id, sourceName: id, sourceUrl: `https://example.org/${id}`, sourceId: id, firstParty: true, role: "main", score: 80, publishedAt: new Date().toISOString(), sources: 1 },
+    });
+    const entries = [entry("new-event", null), entry("commentary-follow-up", { key: "2098-01-01", title: "earlier" })];
+    assert.deepEqual(arrangeDaily(entries, snapshot).flashes.map(e => e.entry.itemId), ["commentary-follow-up"]);
+    assert.equal(arrangeDaily(entries, snapshot.map(c => ({ ...c, commentary: false }))).main.length, 2);
+  } finally {
+    await sql`DELETE FROM settings WHERE key = 'categories'`;
+  }
 });

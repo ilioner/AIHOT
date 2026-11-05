@@ -1,11 +1,12 @@
 // Share images only need public title/summary metadata. Keep the same page visibility rule without
 // loading bodies, translations, related stories or signed media that never appear on these cards.
-import { CATEGORY_LABELS, type CategoryKey } from '@aihot/contracts/taxonomy';
+import { type CategoryKey } from '@aihot/contracts/taxonomy';
 import { beijingDate } from '@aihot/contracts/time';
 import { ITEM_COPY, withSubject } from '@aihot/site';
 import type { OgCard } from '../media/og.ts';
 import { sql } from '../db.ts';
 import { hasItemPage, publicSourceName } from './rules.ts';
+import { loadCategories } from './categories.ts';
 
 export async function loadItemShare(id: string) {
   const [row] = await sql<{
@@ -16,7 +17,9 @@ export async function loadItemShare(id: string) {
     FROM publications p JOIN sources s ON s.id = p.source_id WHERE p.article_id = ${id}`;
   if (!row || !hasItemPage({ visibility: row.visibility, sourceMode: row.source_mode })) return null;
   const summaryOnly = row.visibility === 'summary-only';
-  return { id: row.id, title: row.title, summary: row.summary, category: summaryOnly ? null : row.category, selected: !summaryOnly && row.selected,
+  const categories = await loadCategories();
+  const categoryLabel = summaryOnly ? null : categories.find(c => c.key === row.category)?.label ?? row.category;
+  return { id: row.id, title: row.title, summary: row.summary, categoryLabel, category: summaryOnly ? null : row.category, selected: !summaryOnly && row.selected,
     score: summaryOnly || row.score === null ? null : Math.round(Number(row.score)), timelineAt: row.timeline_at.toISOString(),
     source: { name: publicSourceName(row.source_name) } };
 }
@@ -26,7 +29,7 @@ export async function loadItemOgCard(id: string): Promise<OgCard | null> {
   const item = await loadItemShare(id);
   if (!item) return null;
   return {
-    kicker: item.category ? CATEGORY_LABELS[item.category] : withSubject('动态'),
+    kicker: item.categoryLabel ?? withSubject('动态'),
     title: item.title,
     subtitle: item.summary,
     meta: `${item.source.name} · ${beijingDate(item.timelineAt)}`,

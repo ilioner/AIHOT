@@ -14,6 +14,7 @@
 
 - Node.js 24 直接运行 TypeScript，后端没有构建步骤。npm workspaces：`apps/*`、`packages/*`、`industry`、`site`、`modules/*`。
 - 本机运行和 Docker 见 `docs/deploy.md`。
+- 本地 UI 测试使用 `egolite`。
 - 改完至少跑：
   ```bash
   npm run typecheck

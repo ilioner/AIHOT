@@ -7,6 +7,7 @@
 // renders them like any import.
 import type { ComponentType, ReactNode } from "react";
 import type { TopicSummary } from "@aihot/contracts/site";
+import type { PublicCategoryView } from "@aihot/contracts/taxonomy";
 import type { NavItem, Tab } from "./components/shell/nav";
 
 export interface AdminNavEntry {
@@ -27,6 +28,8 @@ export interface AgentPanelProps {
   tag: string | null;
   /** The page's time (ms), read on the server like `base`: what depends on it reads the same in the browser. */
   now: number;
+  /** Categories available to the public machine-readable feeds. */
+  categories: PublicCategoryView[];
 }
 
 /** A way in on the agent page: a card in its chooser and a tab (`?tab=<key>`) with its panel. */

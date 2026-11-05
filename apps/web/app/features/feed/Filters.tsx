@@ -2,7 +2,7 @@
 // button on phones), the phone bar of 精选 and 全部, and search.
 import { useEffect, useRef, useState } from "react";
 import { Form, Link, useNavigation, useSearchParams } from "react-router";
-import { CATEGORY_KEYS, CATEGORY_LABELS, CHANNEL_LABELS, type CategoryKey, type ChannelKey } from "@aihot/contracts/taxonomy";
+import { CHANNEL_LABELS, type ChannelKey, type PublicCategoryView } from "@aihot/contracts/taxonomy";
 import { SITE } from "@aihot/site";
 import { IconClose, IconFilter, IconSearch } from "../../components/icons";
 import { PillTabs } from "../../components/ui/Tabs";
@@ -29,29 +29,29 @@ function hrefWith(base: string, params: URLSearchParams, patch: Record<string, s
  * 一手 clears the category and picking a category clears 一手. Older 资讯 / X links still filter; the
  * choice then shows as none.
  */
-function filterOptions(base: string, params: URLSearchParams, noneLabel: string) {
+function filterOptions(base: string, params: URLSearchParams, noneLabel: string, categories: PublicCategoryView[]) {
   return [
     { key: "all", label: noneLabel, to: hrefWith(base, params, { category: null, channel: null }) },
     { key: "firstParty", label: CHANNEL_LABELS.firstParty, to: hrefWith(base, params, { category: null, channel: "firstParty" }) },
-    ...CATEGORY_KEYS.map((k) => ({ key: k, label: CATEGORY_LABELS[k], to: hrefWith(base, params, { category: k, channel: null }) })),
+    ...categories.filter((c) => c.enabled).map((c) => ({ key: c.key, label: c.label, to: hrefWith(base, params, { category: c.key, channel: null }) })),
   ];
 }
 
-function filterKey(category: CategoryKey | null, channel: ChannelKey): string {
+function filterKey(category: string | null, channel: ChannelKey): string {
   return channel === "firstParty" ? "firstParty" : (category ?? "all");
 }
 
 /** Desktop: the filter as a row of tabs beside the search field. */
-export function CategoryTabs({ base, category, channel = "all", layoutId, className = "" }: { base: string; category: CategoryKey | null; channel?: ChannelKey; layoutId: string; className?: string }) {
+export function CategoryTabs({ base, categories, category, channel = "all", layoutId, className = "" }: { base: string; categories: PublicCategoryView[]; category: string | null; channel?: ChannelKey; layoutId: string; className?: string }) {
   const [params] = useSearchParams();
-  return <PillTabs items={filterOptions(base, params, "全部").map(o => ({ ...o, prefetchOnPress: true }))} active={filterKey(category, channel)} layoutId={layoutId} label="筛选" className={className} />;
+  return <PillTabs items={filterOptions(base, params, "全部", categories).map(o => ({ ...o, prefetchOnPress: true }))} active={filterKey(category, channel)} layoutId={layoutId} label="筛选" className={className} />;
 }
 
 /**
  * The phone bar of 精选 and 全部: the brand, the 精选 | 全部 switch (a filter in use carries over), and
  * buttons for the filter sheet and search.
  */
-export function FeedBar({ base, category, channel }: { base: "/" | "/all"; category: CategoryKey | null; channel: ChannelKey }) {
+export function FeedBar({ base, categories, category, channel }: { base: "/" | "/all"; categories: PublicCategoryView[]; category: string | null; channel: ChannelKey }) {
   const [params] = useSearchParams();
   const [sheet, setSheet] = useState(false);
   const scope = (to: string) => hrefWith(to, params, { q: null, tab: null, search: null });
@@ -86,18 +86,18 @@ export function FeedBar({ base, category, channel }: { base: "/" | "/all"; categ
           </>
         }
       />
-      <FilterSheet open={sheet} onClose={() => setSheet(false)} base={base} active={filterKey(category, channel)} />
+      <FilterSheet open={sheet} onClose={() => setSheet(false)} base={base} categories={categories} active={filterKey(category, channel)} />
     </>
   );
 }
 
 /** Phones: the filter as a sheet of options, the one in use ticked; choosing one applies it. */
-function FilterSheet({ open, onClose, base, active }: { open: boolean; onClose: () => void; base: string; active: string }) {
+function FilterSheet({ open, onClose, base, categories, active }: { categories: PublicCategoryView[]; open: boolean; onClose: () => void; base: string; active: string }) {
   const [params] = useSearchParams();
   return (
     <Sheet open={open} onClose={onClose} title="筛选">
       <ul className="mx-4 divide-y divide-line-soft">
-        {filterOptions(base, params, "不限").map((o) => {
+        {filterOptions(base, params, "不限", categories).map((o) => {
           const on = o.key === active;
           return (
             <li key={o.key}>
@@ -119,13 +119,14 @@ function FilterSheet({ open, onClose, base, active }: { open: boolean; onClose: 
 }
 
 /** Phones: the filter and tag in use as chips under the bar; each one clears itself when tapped. */
-export function ActiveFilters({ base, category, channel, tag }: { base: string; category: CategoryKey | null; channel: ChannelKey; tag: string | null }) {
+export function ActiveFilters({ base, categories, category, channel, tag }: { base: string; categories: PublicCategoryView[]; category: string | null; channel: ChannelKey; tag: string | null }) {
   const [params] = useSearchParams();
-  const label = channel === "firstParty" ? CHANNEL_LABELS.firstParty : category ? CATEGORY_LABELS[category] : null;
+  const label = channel === "firstParty" ? CHANNEL_LABELS.firstParty : category ? categories.find((c) => c.key === category)?.label ?? category : null;
   if (!label && !tag) return null;
+  const historical = !!category && !categories.some((c) => c.key === category && c.enabled);
   const chip = "inline-flex min-h-11 max-w-full items-center gap-1 rounded-full bg-accent-soft pl-3 pr-2 text-[13px] font-medium text-accent transition-opacity active:opacity-60";
   return (
-    <div className="flex flex-wrap gap-2 pb-3 pt-1 lg:hidden">
+    <div className={`flex flex-wrap gap-2 pb-3 pt-1 ${historical ? "" : "lg:hidden"}`}>
       {label && (
         <Link to={hrefWith(base, params, { category: null, channel: null })} aria-label={`取消筛选：${label}`} className={chip}>
           只看{label}

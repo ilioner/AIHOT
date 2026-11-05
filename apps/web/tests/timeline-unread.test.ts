@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium, expect, type Browser } from "@playwright/test";
-import { FIXTURE_AT as at, fakeApi, feedItem, itemDetail, startWebServer, type WebServer } from "./web-server.ts";
+import { FIXTURE_AT as at, fakeApi, fixtureCategories, feedItem, itemDetail, startWebServer, type WebServer } from "./web-server.ts";
 
 const earlier = "2026-10-03T08:00:00.000Z";
 
@@ -33,19 +33,19 @@ const api = fakeApi((url, res) => {
     const cursor = url.searchParams.get("cursor");
     if (tag === "boundary") {
       const n = cursor ? Number(cursor) : 1;
-      return { filters: { channel: "all", category: null, tag }, cards: [card(`boundary-${n}`, `批次 ${n}`)], nextCursor: n < 5 ? String(n + 1) : null, hot: null, dayCounts: { "2026-10-04": 5 } };
+      return { categories: fixtureCategories, filters: { channel: "all", category: null, tag }, cards: [card(`boundary-${n}`, `批次 ${n}`)], nextCursor: n < 5 ? String(n + 1) : null, hot: null, dayCounts: { "2026-10-04": 5 } };
     }
     if (tag === "group") {
-      return { filters: { channel: "all", category: null, tag: "group" }, cards: [groupCard, readGroupCard], nextCursor: null, hot: null, dayCounts: { "2026-10-04": 2 } };
+      return { categories: fixtureCategories, filters: { channel: "all", category: null, tag: "group" }, cards: [groupCard, readGroupCard], nextCursor: null, hot: null, dayCounts: { "2026-10-04": 2 } };
     }
     if (tag === "read") {
-      return { filters: { channel: "all", category: null, tag: "read" }, cards: [card("c1", "第一页文章甲")], nextCursor: null, hot: null, dayCounts: { "2026-10-04": 1 } };
+      return { categories: fixtureCategories, filters: { channel: "all", category: null, tag: "read" }, cards: [card("c1", "第一页文章甲")], nextCursor: null, hot: null, dayCounts: { "2026-10-04": 1 } };
     }
     if (cursor === "p2") {
       if (failNextPage) { res.statusCode = 503; return { code: "unavailable" }; }
-      return { filters: { channel: "all", category: null, tag: null }, cards: [card("c3", "第二页文章甲", earlier), card("c4", "第二页文章乙", earlier)], nextCursor: null, hot: null, dayCounts: { "2026-10-03": 2 } };
+      return { categories: fixtureCategories, filters: { channel: "all", category: null, tag: null }, cards: [card("c3", "第二页文章甲", earlier), card("c4", "第二页文章乙", earlier)], nextCursor: null, hot: null, dayCounts: { "2026-10-03": 2 } };
     }
-    return { filters: { channel: "all", category: null, tag: null }, cards: [card("c1", "第一页文章甲"), card("c2", "第一页文章乙")], nextCursor: "p2", hot: null, dayCounts: { "2026-10-04": 2 } };
+    return { categories: fixtureCategories, filters: { channel: "all", category: null, tag: null }, cards: [card("c1", "第一页文章甲"), card("c2", "第一页文章乙")], nextCursor: "p2", hot: null, dayCounts: { "2026-10-04": 2 } };
   }
   if (p === "/api/site/groups/f1/reports") {
     const report = (id: string, title: string) => ({ id, title, source: { name: "Fixture" }, timelineAt: at, originalUrl: `https://example.org/${id}` });

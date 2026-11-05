@@ -1,7 +1,7 @@
 // First-party site API (/api/site/*). Not public, not versioned, never called /api/v2.
 // Reads through the same public read layer as v1; no cookies are read or set.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { isCategoryKey, isChannelKey, type CategoryKey, type ChannelKey } from "@aihot/contracts/taxonomy";
+import { isCategoryKey, isChannelKey, publicApiCategoryKeys, type CategoryDefinition, type CategoryKey, type ChannelKey } from "@aihot/contracts/taxonomy";
 import type { ReportIndexResponse, ReportLatestPage, ReportNavigationResponse, SearchSuggestions, SiteContact } from "@aihot/contracts/site";
 import { InvalidCursorError } from "@aihot/backend/lib/cursor";
 import { exportMarkdown, loadItemDetail } from "@aihot/backend/publication/detail";
@@ -47,27 +47,36 @@ export interface FilterParams {
   tag: string | null;
 }
 
-export function parseFilters(q: Record<string, string>): FilterParams {
+import { loadCategories, publicCategoryViews } from "@aihot/backend/publication/categories";
+
+export function parseFilters(q: Record<string, string>, categories: readonly CategoryDefinition[]): FilterParams {
   const channel = q.channel ?? "all";
   if (!isChannelKey(channel)) throw new BadRequest("invalid channel");
   const category = q.category ?? null;
-  if (category !== null && !isCategoryKey(category)) throw new BadRequest("invalid category");
+  if (category !== null && !isCategoryKey(category, categories)) throw new BadRequest("invalid category");
   const tag = q.tag?.trim() ? q.tag.trim().slice(0, 60) : null;
   return { channel, category: category as CategoryKey | null, tag };
 }
 
 export function registerSite(app: FastifyInstance) {
+  app.get("/api/site/categories", siteHandler(async (req, reply) => {
+    const definitions = await loadCategories();
+    const keys = new Set(publicApiCategoryKeys(definitions));
+    const categories = publicCategoryViews(definitions).filter(c => keys.has(c.key));
+    return sendJsonWithEtag(req, reply, { categories }, { etagPrefix: "categories", cacheControl: "public, max-age=60, s-maxage=60" });
+  }));
   app.get("/api/site/meta", siteHandler(async (req, reply) => {
     return sendJsonWithEtag(req, reply, siteMeta(), { etagPrefix: "meta", cacheControl: "public, max-age=60, s-maxage=60" });
   }));
 
   app.get("/api/site/timeline", siteHandler(async (req, reply) => {
     const q = looseQuery(req);
-    const filters = parseFilters(q);
+    const categories = await loadCategories();
+    const filters = parseFilters(q, categories);
     const limit = Math.min(Math.max(Number(q.limit) || 20, 1), 40);
     const unfiltered = filters.channel === "all" && !filters.category && !filters.tag && !q.cursor;
     const [data, hot] = await Promise.all([
-      loadTimeline({ ...filters, cursor: q.cursor || null, limit }),
+      loadTimeline({ ...filters, cursor: q.cursor || null, limit }, categories),
       unfiltered ? loadHotStrip() : null,
     ]);
     // Any cache in front and the home page built from this answer share one absolute deadline.
@@ -77,11 +86,12 @@ export function registerSite(app: FastifyInstance) {
 
   app.get("/api/site/pool", siteHandler(async (req, reply) => {
     const q = looseQuery(req);
-    const filters = parseFilters(q);
+    const categories = await loadCategories();
+    const filters = parseFilters(q, categories);
     const page = Math.min(Math.max(Number(q.page) || 1, 1), 50);
     const search = q.q?.trim() ? q.q.trim().slice(0, 200) : null;
     const tab = q.tab === "relevance" ? "relevance" : "time";
-    return sendJsonWithEtag(req, reply, await loadPool({ ...filters, q: search, tab, page }), { etagPrefix: "pool", cacheControl: "public, max-age=60, s-maxage=60" });
+    return sendJsonWithEtag(req, reply, await loadPool({ ...filters, q: search, tab, page }, categories), { etagPrefix: "pool", cacheControl: "public, max-age=60, s-maxage=60" });
   }));
 
   app.get("/api/site/items/:id", siteHandler(async (req, reply) => {
@@ -107,7 +117,7 @@ export function registerSite(app: FastifyInstance) {
   }));
 
   app.get("/api/site/groups/:factId/reports", siteHandler(async (req, reply) => {
-    const data = await loadGroupReports({ factPublicId: (req.params as { factId: string }).factId, ...parseFilters(looseQuery(req)) });
+    const data = await loadGroupReports({ factPublicId: (req.params as { factId: string }).factId, ...parseFilters(looseQuery(req), await loadCategories()) });
     if (!data) return sendProblem(req, reply, { status: 404, code: "not_found", detail: "reading group unavailable" });
     return reply.header("Cache-Control", "no-store").send(data);
   }));

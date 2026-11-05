@@ -21,6 +21,12 @@ export const CATEGORIES = [
   { key: "opinion", tagColor: "purple", label: "观点", section: "技巧与观点", guide: "围绕 AI 教学、教育信息化、相关政策或技术影响，有事实与推理支持的解释、判断、复盘、预测或访谈观点。可能的教学迁移不得写成已验证效果；以文件要求和适用范围为核心的解读归政策，作者是名人不自动归观点。", commentary: true },
 ] as const satisfies ReadonlyArray<{ key: string; tagColor: string; label: string; feedLabel?: string; section: string; guide: string; commentary?: true }>;
 
+/** Stable first-tag identities, separate from editable display names. */
+export const CATEGORY_FIRST_TAGS: Readonly<Record<string, string>> = {
+  policy: "政策文件", "ai-teaching": "AI赋能教学", industry: "行业动态", skills: "技能竞赛",
+  research: "研究/报告", tip: "教程/实践", opinion: "观点/趋势",
+};
+
 /**
  * 这个行业最受关注的一类发布：日报报头的“N 份新文件”、改分类后修订已出的报告都按它数。
  * category 是类别，tag 是标签，两者都对上才算；unit 接在数字后面。

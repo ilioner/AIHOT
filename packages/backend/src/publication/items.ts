@@ -1,8 +1,8 @@
 // Public read layer, item level. Every exit (site API, v1, RSS, MCP, sitemap) reads
 // items through these columns and views; which rows are public is decided by scope.ts.
-import { CATEGORY_KEYS, toPublicApiCategory, type CategoryKey, type ChannelKey, type PublicApiCategoryKey } from "@aihot/contracts/taxonomy";
+import { DEFAULT_CATEGORIES, type CategoryDefinition, type CategoryKey, type ChannelKey, type PublicApiCategoryKey } from "@aihot/contracts/taxonomy";
 import type { FeedItemSummary, ItemSummary, MediaView, XPostView } from "@aihot/contracts/site";
-import { POLICY } from "@aihot/site";
+import { POLICY, PUBLIC_CATEGORIES } from "@aihot/site";
 import { sql, type Db } from "../db.ts";
 import { isChineseText } from "../lib/text.ts";
 import { isEmptyOrLinkOnly } from "../content/posts.ts";
@@ -89,7 +89,8 @@ export function categoryCondition(category: CategoryKey | null | undefined) {
 /** The public API's, RSS's and MCP's filter: every category the site publishes as this one (PUBLIC_CATEGORIES). */
 export function publicCategoryCondition(category: PublicApiCategoryKey | null | undefined) {
   if (!category) return sql``;
-  return sql`AND p.category IN ${sql(CATEGORY_KEYS.filter((k) => toPublicApiCategory(k) === category))}`;
+  const keys = [category, ...Object.entries(PUBLIC_CATEGORIES.merge).filter(([, target]) => target === category).map(([key]) => key)];
+  return sql`AND p.category IN ${sql(keys)}`;
 }
 
 export function tagCondition(tag: string | null | undefined) {
@@ -150,7 +151,7 @@ export function showsPost(row: { channel: string; body_mode: string }): boolean 
 }
 
 /** The shared public article; its X post is added as each answer shows it. */
-export function toItemSummary(row: ItemRow): ItemSummary {
+export function toItemSummary(row: ItemRow, categories: readonly CategoryDefinition[] = DEFAULT_CATEGORIES): ItemSummary {
   return {
     id: row.id,
     title: row.title,
@@ -162,7 +163,8 @@ export function toItemSummary(row: ItemRow): ItemSummary {
     publishedAt: row.published_at?.toISOString() ?? null,
     discoveredAt: row.discovered_at.toISOString(),
     timelineAt: row.timeline_at.toISOString(),
-    category: (row.category as CategoryKey | null) ?? null,
+    category: row.category ?? null,
+    categoryLabel: categories.find(c => c.key === row.category)?.label ?? row.category ?? null,
     tags: displayTags(row.tags),
     score: row.score === null ? null : Math.round(Number(row.score)),
     selected: row.selected,
@@ -172,13 +174,13 @@ export function toItemSummary(row: ItemRow): ItemSummary {
 }
 
 /** Project the shared public article into the exact fields a site card renders. */
-export function toFeedItemSummary(row: ItemRow): FeedItemSummary {
-  const item = toItemSummary(row);
+export function toFeedItemSummary(row: ItemRow, categories: readonly CategoryDefinition[] = DEFAULT_CATEGORIES): FeedItemSummary {
+  const item = toItemSummary(row, categories);
   const x = showsPost(row) ? xView(row, true) : null;
   return {
     id: item.id, title: item.title, summary: item.summary ?? (x?.text || null), reason: item.reason,
     source: item.source, publishedAt: item.publishedAt, timelineAt: item.timelineAt,
-    category: item.category, tags: item.tags, score: item.score, selected: item.selected, channel: item.channel,
+    category: item.category, categoryLabel: item.categoryLabel, tags: item.tags, score: item.score, selected: item.selected, channel: item.channel,
     x: x ? {
       authorName: x.authorName, handle: x.handle, avatarUrl: x.avatarUrl,
       ...(x.avatarSrcSet ? { avatarSrcSet: x.avatarSrcSet } : {}), media: x.media,

@@ -12,8 +12,8 @@ import { describePublicationTime } from "../sources/dates.ts";
 //      copy that uses a word the site keeps from readers (industry/wording.ts) goes back once to change only those.
 // Material with only a title or a feed summary has its article page fetched before it is judged.
 import { z } from "zod";
-import { CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
-import { CATEGORIES } from "@aihot/industry/taxonomy";
+import { DEFAULT_CATEGORIES, type CategoryDefinition } from "@aihot/contracts/taxonomy";
+import { loadCategories } from "../taxonomy.ts";
 import { SELECTION } from "@aihot/industry/selection";
 import { ITEM_COPY } from "@aihot/site";
 import { sql } from "../db.ts";
@@ -31,7 +31,7 @@ import {
   needsShortTweetTranslation, parseTranslateOutput, PREFILTER_SYSTEM, prefilterUser, translateInputOf, UNDERSTAND_SYSTEM, understandUser,
   type IdentityGuard,
 } from "./writing.ts";
-import { CATEGORY_GUIDE, CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, ITEM_TYPES, normalizeTags, TOPIC_TAGS } from "./vocabulary.ts";
+import { CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, ITEM_TYPES, normalizeTags, TOPIC_TAGS } from "./vocabulary.ts";
 import { promptText, promptVersion } from "./prompts.ts";
 import { originalPostCopy } from "../content/posts.ts";
 import { wordingProblems } from "./wording.ts";
@@ -130,13 +130,16 @@ const FactSchema = z
   .nullable()
   .catch(null);
 
-export const StructureSchema = z.object({
-  scope: z.enum(["single", "composite", "unknown"]).catch("unknown"),
-  category: z.enum(CATEGORY_KEYS).nullable().catch(null),
-  tags: z.array(z.string()).max(12).catch([]),
-  subjects: z.array(z.string()).max(6).catch([]),
-  fact: FactSchema,
-});
+export function structureSchema(categories: readonly CategoryDefinition[]) {
+  return z.object({
+    scope: z.enum(["single", "composite", "unknown"]).catch("unknown"),
+    category: z.enum(categories.filter(c => c.enabled).map(c => c.key) as [string, ...string[]]).nullable().catch(null),
+    tags: z.array(z.string()).max(12).catch([]),
+    subjects: z.array(z.string()).max(6).catch([]),
+    fact: FactSchema,
+  });
+}
+export const StructureSchema = structureSchema(DEFAULT_CATEGORIES);
 
 const UnderstandSchema = z.object({
   itemType: z.enum(ITEM_TYPES),
@@ -153,17 +156,21 @@ const SummarizeSchema = z.object({ titleZh: z.string(), summaryZh: z.string(), b
 const ZH_COUNT = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
 
 /** The structure step owns the public category and tags, as well as grouping evidence (filled from the pack's vocabulary). */
-export const STRUCTURE_SYSTEM = promptText("structure", {
-  categoryCount: ZH_COUNT[CATEGORIES.length] ?? String(CATEGORIES.length),
-  categoryGuide: CATEGORY_GUIDE,
-  categoryTags: CATEGORY_TAGS.join("、"),
-  topicTags: TOPIC_TAGS.join("、"),
-  entityTags: ENTITY_TAGS.join("、"),
-  entities: Object.entries(ENTITIES).map(([id, e]) => `${id}（${e.aliases.slice(0, 3).join("/")}）`).join("，"),
-});
+export function structureSystem(categories: readonly CategoryDefinition[]): string {
+  const active = categories.filter(c => c.enabled);
+  return promptText("structure", {
+    categoryCount: ZH_COUNT[active.length] ?? String(active.length),
+    categoryGuide: active.map(c => `- ${c.key}（${c.label}，首标签「${c.tag}」）：${c.guide}`).join("\n"),
+    categoryTags: [...active.map(c => c.tag), CATEGORY_TAGS.at(-1)!].join("、"),
+    topicTags: TOPIC_TAGS.join("、"),
+    entityTags: ENTITY_TAGS.join("、"),
+    entities: Object.entries(ENTITIES).map(([id, e]) => `${id}（${e.aliases.slice(0, 3).join("/")}）`).join("，"),
+  });
+}
+export const STRUCTURE_SYSTEM = structureSystem(DEFAULT_CATEGORIES);
 
 /** Keep only quotes present both in the original material and in the text the structure model saw. */
-export function normalizeStructure(data: z.infer<typeof StructureSchema>, a: AnalyzeInputArticle) {
+export function normalizeStructure(data: z.infer<typeof StructureSchema>, a: AnalyzeInputArticle, categories: readonly CategoryDefinition[] = DEFAULT_CATEGORIES) {
   const visible = collapseWhitespace(buildMaterial(a));
   const originals = (a.xPost
     ? [String(a.xPost.text ?? a.title), String(a.xPost.quoted?.text ?? "")]
@@ -184,7 +191,7 @@ export function normalizeStructure(data: z.infer<typeof StructureSchema>, a: Ana
     }).slice(0, 4),
   };
   return {
-    category: data.category, tags: normalizeTags(data.tags),
+    category: data.category, tags: normalizeTags(data.tags, categories.filter(c => c.enabled)),
     subjects: [...new Set(data.subjects.map((s) => s.trim().toLowerCase()).filter((s) => s in ENTITIES))],
     scope, fact,
   };
@@ -325,7 +332,8 @@ export async function runSelectionScores(
   return threshold === null ? null : runScores(a, threshold, opts, onReceipt);
 }
 
-export async function runStructure(a: AnalyzeInputArticle, opts: StepOpts = {}): Promise<NonNullable<AnalysisRun["structure"]>> {
+export async function runStructure(a: AnalyzeInputArticle, opts: StepOpts = {}, definitions?: readonly CategoryDefinition[]): Promise<NonNullable<AnalysisRun["structure"]>> {
+  const categories = definitions ?? await loadCategories();
   const model = await modelFor("structure");
   checkAnalysisRunning();
   const res = await chatJson({
@@ -333,14 +341,14 @@ export async function runStructure(a: AnalyzeInputArticle, opts: StepOpts = {}):
     purpose: "structure_article",
     subject: subjectOf(a),
     promptVersion: PROMPT_VERSIONS.structure,
-    system: STRUCTURE_SYSTEM,
+    system: structureSystem(categories),
     user: buildMaterial(a),
-    schema: StructureSchema,
+    schema: structureSchema(categories),
     temperature: 0.2,
     maxTokens: 1200,
     attemptTag: tagged(opts.attemptTag, "structure"),
   });
-  return { ...normalizeStructure(res.data, a), model: res.model, receiptId: res.receiptId, reused: res.reused };
+  return { ...normalizeStructure(res.data, a, categories), model: res.model, receiptId: res.receiptId, reused: res.reused };
 }
 
 /** Content understanding grounded in the original; null on a content-filter refusal. */
@@ -491,11 +499,12 @@ export async function runAnalysis(a: AnalyzeInputArticle, opts: StepOpts = {}): 
   checkAnalysisRunning();
   // Missing article text waits for a later revision, before any paid step; displayable original posts keep their judgement.
   if (awaitsMaterial(a)) return { prefilter: null, scores: null, writing: null, structure: null };
+  const categories = await loadCategories();
   const prefilter = await runSelectionPrefilter(a, opts);
   if (prefilter.label === "BLOCK") return { prefilter, scores: null, writing: null, structure: null };
   const original = originalPostCopy(a.xPost, a.url);
   // The structure step needs nothing from the scores: it runs beside them.
-  const structure = runStructure(a, opts).then((value) => ({ value }), (error: unknown) => ({ error }));
+  const structure = runStructure(a, opts, categories).then((value) => ({ value }), (error: unknown) => ({ error }));
   try {
     const scores = await runSelectionScores(a, opts);
     const sum = scoreSum(scores);

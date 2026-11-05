@@ -6,7 +6,8 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { EDITION_TIMES, SITE } from "@aihot/site";
 import { CONTACT_ALIASES, PUBLIC_INTERFACE_VERSION } from "@aihot/contracts/http-policy";
-import { PUBLIC_API_CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
+import { publicApiCategoryKeys } from "@aihot/contracts/taxonomy";
+import { loadCategories } from "@aihot/backend/publication/categories";
 import { REPO_ROOT, config } from "@aihot/backend/config";
 import { applyPublicHeaders, sendTextWithEtag } from "../http/respond.ts";
 import { loadSitemap } from "@aihot/backend/publication/sitemap";
@@ -35,7 +36,7 @@ const TYPES: Record<string, string> = {
  * reports' edition times, the public interface version and the category list (JSON-escaped in JSON files). In a JSON document, an
  * `enum` or `examples` list holding "{{categories}}" becomes the list of category keys.
  */
-function fillPlaceholders(text: string, json: boolean): string {
+function fillPlaceholders(text: string, json: boolean, categories: string[]): string {
   const values: Record<string, string> = {
     siteName: SITE.name,
     siteUrl: config.siteUrl,
@@ -46,7 +47,7 @@ function fillPlaceholders(text: string, json: boolean): string {
     weeklyTime: EDITION_TIMES.weekly,
     monthlyTime: EDITION_TIMES.monthly,
     version: PUBLIC_INTERFACE_VERSION,
-    categoryList: PUBLIC_API_CATEGORY_KEYS.join(", "),
+    categoryList: categories.join(", "),
   };
   const filled = text.replace(/\{\{(\w+)\}\}/g, (all, key: string) => {
     const value = values[key];
@@ -57,7 +58,7 @@ function fillPlaceholders(text: string, json: boolean): string {
   const walk = (node: unknown) => {
     if (!node || typeof node !== "object") return;
     const o = node as Record<string, unknown>;
-    for (const key of ["enum", "examples"]) if (Array.isArray(o[key]) && (o[key] as unknown[]).includes("{{categories}}")) o[key] = [...PUBLIC_API_CATEGORY_KEYS];
+    for (const key of ["enum", "examples"]) if (Array.isArray(o[key]) && (o[key] as unknown[]).includes("{{categories}}")) o[key] = [...categories];
     for (const v of Object.values(o)) walk(v);
   };
   const doc: unknown = JSON.parse(filled);
@@ -77,13 +78,17 @@ const fileCache = new Map<string, Entry & { mtime: number }>();
 /** A file's bytes and ETag, read again when it changes; `fill` fills in a public file's placeholders. */
 async function loadFile(file: string, fill = false): Promise<Entry> {
   const s = await stat(file);
-  const cached = fileCache.get(file);
-  if (cached && cached.mtime === s.mtimeMs) return cached;
-  let body = await readFile(file);
-  if (fill && body.includes("{{")) body = Buffer.from(fillPlaceholders(body.toString("utf8"), /\.(json|webmanifest)$/.test(file)));
-  const entry = { body, etag: etagOf(body), mtime: s.mtimeMs };
-  fileCache.set(file, entry);
-  return entry;
+  let entry = fileCache.get(file);
+  if (!entry || entry.mtime !== s.mtimeMs) {
+    const body = await readFile(file);
+    entry = { body, etag: etagOf(body), mtime: s.mtimeMs };
+    fileCache.set(file, entry);
+  }
+  if (!fill || !entry.body.includes("{{")) return entry;
+  const text = entry.body.toString("utf8");
+  const categories = /\{\{(?:categories|categoryList)\}\}/.test(text) ? publicApiCategoryKeys(await loadCategories()) : [];
+  const body = Buffer.from(fillPlaceholders(text, /\.(json|webmanifest)$/.test(file), categories));
+  return { body, etag: etagOf(body) };
 }
 
 function sendEntry(req: FastifyRequest, reply: FastifyReply, entry: Entry, opts: { type: string; cacheControl: string; publicApi?: boolean }) {
@@ -100,8 +105,10 @@ export async function sendFile(req: FastifyRequest, reply: FastifyReply, file: s
   let entry;
   try {
     entry = await loadFile(file, opts.fill);
-  } catch {
-    return reply.code(404).type("text/plain; charset=utf-8").send("Not found");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return reply.code(404).type("text/plain; charset=utf-8").send("Not found");
+    req.log.error({ err: error }, "public file unavailable");
+    return reply.code(503).header("Cache-Control", "no-store").type("text/plain; charset=utf-8").send("Temporarily unavailable");
   }
   return sendEntry(req, reply, entry, { type: opts.type ?? TYPES[path.extname(file)] ?? "application/octet-stream", cacheControl: opts.cacheControl, publicApi: opts.publicApi });
 }
@@ -119,7 +126,7 @@ export function registerStatic(app: FastifyInstance) {
   });
 
   app.get("/llms.txt", async (req, reply) => {
-    const text = llmsTxt(await loadLlmsAvailability());
+    const text = llmsTxt(await loadLlmsAvailability(), await loadCategories());
     applyPublicHeaders(reply, { cors: false });
     // Cached like /openapi-v1.json: a release that adds an ability is described everywhere within minutes.
     return sendTextWithEtag(req, reply, text, { etagPrefix: "llms", cacheControl: "public, max-age=300, must-revalidate", contentType: "text/plain; charset=utf-8" });

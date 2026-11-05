@@ -1,7 +1,6 @@
 import { SITE } from "@aihot/site";
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
-import { CATEGORY_KEYS, CATEGORY_LABELS } from "@aihot/contracts/taxonomy";
 import type { Route } from "./+types/content-item";
 import type { AdminContentChain, AdminPresentationRefresh } from "@aihot/contracts/admin";
 import { adminGet } from "../../lib/admin.server";
@@ -36,6 +35,7 @@ type Dialog = null | "visibility" | "seo" | "override" | "analyze" | "extract" |
 
 export default function ContentItem({ loaderData }: Route.ComponentProps) {
   const c = loaderData;
+  const categoryLabel = (key: string) => c.categories.find((category) => category.key === key)?.label ?? key;
   const a = c.article;
   const p = c.publication;
   const { run, pending } = useAdminAction();
@@ -151,7 +151,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
                         <Badge tone={an.relevance === "pass" ? "ok" : "muted"}>{an.relevance}</Badge>
                         {an.selected && <Badge tone="accent">入选</Badge>}
                         <Badge tone="info">分数 {an.score}</Badge>
-                        {an.category && <Badge>{CATEGORY_LABELS[an.category as keyof typeof CATEGORY_LABELS] ?? an.category}</Badge>}
+                        {an.category && <Badge>{categoryLabel(an.category)}</Badge>}
                         <span className="text-ink-4">{an.model} · {an.prompt_version} · 输入 v{an.input_revision} · {an.origin} · {bj(an.created_at)}</span>
                       </div>
                       {an.title_zh && <div className="mt-2 font-medium text-ink">{an.title_zh}</div>}
@@ -178,7 +178,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
                   items={[
                     ["范围", VISIBILITY_LABEL[p.visibility] ?? p.visibility],
                     ["精选", p.selected ? `是 · 可见于 ${p.visible_after ? bj(p.visible_after, true) : "立即"}` : "否"],
-                    ["栏目", p.category ? CATEGORY_LABELS[p.category as keyof typeof CATEGORY_LABELS] ?? p.category : null],
+                    ["栏目", p.category ? categoryLabel(p.category) : null],
                     ["标签", (p.tags as string[] | null)?.join("、")],
                     ["摘要", p.summary],
                     ["推荐理由", p.reason],
@@ -366,7 +366,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
           <Field label="栏目">
             <Select value={fields.category} onChange={(e) => setFields({ ...fields, category: e.target.value })}>
               <option value="">不修正</option>
-              {CATEGORY_KEYS.map((k) => <option key={k} value={k}>{CATEGORY_LABELS[k]}</option>)}
+              {c.categories.filter((category) => category.enabled || category.key === fields.category).map((category) => <option key={category.key} value={category.key}>{category.label}{category.enabled ? "" : "（已停用，保留当前修正）"}</option>)}
             </Select>
           </Field>
           <Field label="标签（逗号分隔）"><Input value={fields.tags} onChange={(e) => setFields({ ...fields, tags: e.target.value })} /></Field>

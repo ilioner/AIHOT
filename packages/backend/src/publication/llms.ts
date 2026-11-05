@@ -1,7 +1,7 @@
 // /llms.txt — generated from the site's own configuration; only real, available resources are listed.
 import { PUBLIC_INTERFACE_VERSION } from "@aihot/contracts/http-policy";
 import { MCP_TOOL_NAMES as T, MCP_TOOLS, mcpToolName } from "@aihot/contracts/mcp";
-import { PUBLIC_API_CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
+import { DEFAULT_CATEGORIES, publicApiCategoryKeys, type CategoryDefinition } from "@aihot/contracts/taxonomy";
 import { ACCESS, EDITION_WHEN, POLICY, REPORTS, SITE, subjectAfter, withSubject } from "@aihot/site";
 import { siteUrl } from "./links.ts";
 import { sql } from "../db.ts";
@@ -46,13 +46,14 @@ export function llmsTxt(opts: {
   /** Every MCP tool, the engine's and the modules'. */
   tools: string[];
   modules: Required<LlmsLines>;
-}): string {
+}, definitions: readonly CategoryDefinition[] = DEFAULT_CATEGORIES): string {
+  const categories = publicApiCategoryKeys(definitions);
   const u = siteUrl;
   const v = PUBLIC_INTERFACE_VERSION;
   const rss = (name: string, id: Parameters<typeof feedMeta>[0]) => `- [${name}](${u(feedMeta(id).path)}): ${feedMeta(id).description}`;
   const page = (name: string, path: string, covers: string | null) => `- [${name}](${u(path)})${covers ? `: ${covers}` : ""}`;
   // Examples use a real category: the second-to-last (papers in the AI pack).
-  const sample = PUBLIC_API_CATEGORY_KEYS.at(-2) ?? PUBLIC_API_CATEGORY_KEYS[0];
+  const sample = categories.at(-2) ?? categories[0];
   const field = TOPIC_GROUPS.find((g) => g.key === "field")?.name ?? "方向";
   const lines: string[] = [];
   lines.push(`# ${SITE.name}`, "");
@@ -75,7 +76,7 @@ export function llmsTxt(opts: {
   if (opts.hasDailies) lines.push(rss("日报 RSS", "daily"));
   if (opts.hasWeekly) lines.push(`- [周报 RSS](${u("/feed/weekly.xml")}): ${EDITION_WHEN.weekly}（北京时间）发布的周报，每期附总述和按栏目分好的${REPORTS.entry.noun}目录，保留最近 12 期。`);
   if (opts.hasMonthly) lines.push(`- [月报 RSS](${u("/feed/monthly.xml")}): ${EDITION_WHEN.monthly}（北京时间）发布的月报，每期附总述和按栏目分好的${REPORTS.entry.noun}目录，保留最近 12 期。`);
-  lines.push(`- [分类 RSS](${u(`/feed/category/${sample}.xml`)}): 按分类订阅精选，slug 支持 ${PUBLIC_API_CATEGORY_KEYS.join(" / ")}`);
+  lines.push(`- [分类 RSS](${u(`/feed/category/${sample}.xml`)}): 按分类订阅精选，slug 支持 ${categories.join(" / ")}`);
   lines.push(`- [OpenAPI 规范](${u("/openapi-v1.json")}): REST API 的机器可读定义（版本 ${v}，路径是 /api/v1）`);
   lines.push(`- [公开 API · 最近资讯](${u("/api/v1/items")}): JSON，支持 mode=selected/all、window=24h/7d、by=timeline/published（时间口径：默认与网页一致的时间轴，对账原文发布时间用 published）、category、q、limit 与 cursor`);
   lines.push(`- [公开 API · 当前热点](${u("/api/v1/hot-topics")}): 热点榜 Top 10；每条含从 1 开始的 rank，不返回热度值，links.story 指向事件页`);

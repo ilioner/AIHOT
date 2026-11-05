@@ -1,50 +1,61 @@
-// Public vocabularies shared by the website, the API and the worker. The categories themselves belong to
-// the industry pack (industry/taxonomy.ts); their keys are external identities (URLs, API, RSS) and never change.
-// How the public API, RSS and MCP differ from the website is the site's (site/site.ts PUBLIC_CATEGORIES).
-import { CATEGORIES } from "@aihot/industry/taxonomy";
+// Stable category identities are shared by URLs, publications and the worker. The industry pack
+// supplies defaults; backend settings supply the current definitions to HTTP clients and jobs.
+import { CATEGORIES, CATEGORY_FIRST_TAGS } from "@aihot/industry/taxonomy";
 import { PUBLIC_CATEGORIES } from "@aihot/site";
 
-type Category = (typeof CATEGORIES)[number];
+export interface CategoryDefinition {
+  key: string;
+  label: string;
+  tag: string;
+  section: string;
+  guide: string;
+  tagColor: string;
+  feedLabel?: string;
+  commentary?: boolean;
+  enabled: boolean;
+}
 
-export type CategoryKey = Category["key"];
-export const CATEGORY_KEYS = CATEGORIES.map((c) => c.key) as unknown as readonly [CategoryKey, ...CategoryKey[]];
+export interface PublicCategoryView {
+  key: string;
+  label: string;
+  enabled: boolean;
+  feedLabel: string;
+}
 
-/** Website tab labels. */
-export const CATEGORY_LABELS = Object.fromEntries(CATEGORIES.map((c) => [c.key, c.label])) as Record<CategoryKey, string>;
+export const DEFAULT_CATEGORIES: readonly CategoryDefinition[] = CATEGORIES.map(c => ({ ...c, tag: CATEGORY_FIRST_TAGS[c.key]!, enabled: true }));
+export type CategoryKey = string;
+export const CATEGORY_KEYS = CATEGORIES.map(c => c.key) as unknown as readonly [string, ...string[]];
+export const CATEGORY_LABELS: Record<string, string> = Object.fromEntries(CATEGORIES.map(c => [c.key, c.label]));
 
 const MERGE: Partial<Record<string, string>> = PUBLIC_CATEGORIES.merge;
 const FEED_LABELS: Partial<Record<string, string>> = PUBLIC_CATEGORIES.feedLabels;
+export type PublicApiCategoryKey = string;
 
-/** The categories the public API, RSS and MCP know: a merged category is published as the one it joins. */
-export type PublicApiCategoryKey = Exclude<CategoryKey, keyof typeof PUBLIC_CATEGORIES.merge>;
-export const PUBLIC_API_CATEGORY_KEYS = CATEGORIES.filter((c) => !Object.hasOwn(MERGE, c.key)).map((c) => c.key) as unknown as readonly [PublicApiCategoryKey, ...PublicApiCategoryKey[]];
+export function publicApiCategoryKeys(categories: readonly CategoryDefinition[]): string[] {
+  return categories.filter(c => !Object.hasOwn(MERGE, c.key)).map(c => c.key);
+}
+export const PUBLIC_API_CATEGORY_KEYS = publicApiCategoryKeys(DEFAULT_CATEGORIES) as [string, ...string[]];
 
-export function toPublicApiCategory(category: string | null): PublicApiCategoryKey | null {
-  const c = CATEGORIES.find((x) => x.key === category);
-  if (!c) return null;
-  return (MERGE[c.key] ?? c.key) as PublicApiCategoryKey;
+export function toPublicApiCategory(category: string | null, categories?: readonly CategoryDefinition[]): PublicApiCategoryKey | null {
+  if (!category || (categories && !categories.some(c => c.key === category))) return null;
+  return MERGE[category] ?? category;
 }
 
-/** A public category's name in feeds (<category>, a category feed's title): the site's, else the pack's feed label, else its website label. */
-export function feedCategoryLabel(key: PublicApiCategoryKey): string {
-  const c: { label: string; feedLabel?: string } = CATEGORIES.find((x) => x.key === key)!;
-  return FEED_LABELS[key] ?? c.feedLabel ?? c.label;
+export function feedCategoryLabel(key: PublicApiCategoryKey, categories: readonly CategoryDefinition[] = DEFAULT_CATEGORIES): string {
+  const c = categories.find(c => c.key === key);
+  return FEED_LABELS[key] ?? c?.feedLabel ?? c?.label ?? key;
 }
 
-export function isCategoryKey(value: unknown): value is CategoryKey {
-  return typeof value === "string" && (CATEGORY_KEYS as readonly string[]).includes(value);
+export function isCategoryKey(value: unknown, categories: readonly Pick<CategoryDefinition, "key">[] = DEFAULT_CATEGORIES): value is CategoryKey {
+  return typeof value === "string" && categories.some(c => c.key === value);
 }
 
+export const CATEGORY_KEY_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 export const CHANNEL_KEYS = ["all", "news", "x", "firstParty"] as const;
 export type ChannelKey = (typeof CHANNEL_KEYS)[number];
-
 export const CHANNEL_LABELS: Record<ChannelKey, string> = {
-  all: "全部",
-  news: "资讯",
-  x: "X",
-  firstParty: "一手",
+  all: "全部", news: "资讯", x: "X", firstParty: "一手",
 };
-
 export function isChannelKey(value: unknown): value is ChannelKey {
   return typeof value === "string" && (CHANNEL_KEYS as readonly string[]).includes(value);
 }

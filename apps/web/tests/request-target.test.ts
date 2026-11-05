@@ -3,13 +3,13 @@
 import assert from "node:assert/strict";
 import { request } from "node:http";
 import { after, before, test } from "node:test";
-import { fakeApi, startWebServer, type WebServer } from "./web-server.ts";
+import { fakeApi, fixtureCategories, startWebServer, type WebServer } from "./web-server.ts";
 
 let web: WebServer;
 const upstreamPaths: string[] = [];
 const api = fakeApi((url, _res, req) => {
   upstreamPaths.push(req.url ?? "");
-  if (url.pathname === "/api/site/timeline") return { cards: [], nextCursor: null, dayCounts: {}, hot: [], filters: { category: null, channel: null, tag: null } };
+  if (url.pathname === "/api/site/timeline") return { categories: fixtureCategories, cards: [], nextCursor: null, dayCounts: {}, hot: [], filters: { category: null, channel: null, tag: null } };
 });
 
 before(async () => { web = await startWebServer(api); });

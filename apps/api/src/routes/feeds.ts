@@ -1,6 +1,7 @@
 // RSS routes. Unknown query parameters are accepted and never change content.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { feedCacheControl, isFeedCategory, itemFeed, reportFeed, type ItemFeedKind } from "@aihot/backend/publication/feeds";
+import { loadCategories } from "@aihot/backend/publication/categories";
 import { requestNotice, serverModules } from "@aihot/backend/modules";
 import { applyPublicHeaders, sendTextWithEtag } from "../http/respond.ts";
 
@@ -47,10 +48,11 @@ export function registerFeeds(app: FastifyInstance) {
     app.get(full ? "/feed/full/category/:file" : "/feed/category/:file", async (req, reply) => {
       const file = (req.params as { file: string }).file;
       const slug = file.replace(/\.xml$/, "");
-      if (!file.endsWith(".xml") || !isFeedCategory(slug)) return reply.code(404).type("text/plain; charset=utf-8").send("Not found");
       const kind = full ? "selected-full" : "selected";
       try {
-        return await sendFeed(req, reply, await itemFeed(kind, slug, { notice: noticeFor(req) }), feedCacheControl(kind));
+        const categories = await loadCategories();
+        if (!file.endsWith(".xml") || !isFeedCategory(slug, categories)) return reply.code(404).type("text/plain; charset=utf-8").send("Not found");
+        return await sendFeed(req, reply, await itemFeed(kind, slug, { notice: noticeFor(req), categories }), feedCacheControl(kind));
       } catch (error) {
         req.log.error({ err: error }, "feed error");
         return feedError(reply);

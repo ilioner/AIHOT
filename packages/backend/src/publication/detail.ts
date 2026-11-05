@@ -11,6 +11,7 @@ import { evidenceCondition, listedCondition } from "./scope.ts";
 import { itemUrl, siteUrl } from "./links.ts";
 import { hasItemPage, publicSourceName } from "./rules.ts";
 import { topicLinks, topicMembership } from "./topics.ts";
+import { loadCategories } from "./categories.ts";
 
 interface DetailRow extends ItemRow {
   body_html: string | null;
@@ -80,13 +81,14 @@ export async function loadItemDetail(id: string, language: "zh" | "original" = "
   const row = await loadRow(id);
   if (!row || !hasItemPage({ visibility: row.visibility, sourceMode: row.source_mode })) return { kind: "not_found" };
 
-  const summary = toItemSummary(row);
+  const summary = toItemSummary(row, await loadCategories());
   if (row.visibility === "summary-only") {
     const item: SiteItemDetail = {
       ...summary,
       selected: false,
       score: null,
       category: null,
+      categoryLabel: null,
       story: null,
       reason: null,
       tags: [],

@@ -5,6 +5,7 @@
 // appear in the Chinese or the original title. Lists and counts read the selected set one report per
 // fact, as v1 and RSS do.
 import type { CategoryKey } from "@aihot/contracts/taxonomy";
+import { loadCategories } from "./categories.ts";
 import type {
   Brand, TopicGroup, TopicGroupKey, TopicLink, TopicPage, TopicSummary, TopicsResponse,
 } from "@aihot/contracts/site";
@@ -342,11 +343,12 @@ export async function loadTopicPage(slug: string, page: number, now?: Date): Pro
     companyBrands(),
     currentSeats(recheck, at, [topic]),
   ]);
+  const categories = await loadCategories();
   const groupName = TOPIC_GROUPS.find((g) => g.key === topic.group)?.name ?? "";
   return {
     topic: { ...summarize(topic, seats, index.at, brands, live), groupName, poolTotal: pool },
     modules: Object.fromEntries(parts.map((part) => [part.name, part.part(live)])),
-    items: rows.map(toFeedItemSummary),
+    items: rows.map(row => toFeedItemSummary(row, categories)),
     page,
     pageCount,
     pageSize: TOPIC_PAGE_SIZE,

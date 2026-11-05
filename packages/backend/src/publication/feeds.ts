@@ -2,9 +2,10 @@
 // publication time (none when it is unknown). Summary feeds never carry content:encoded; full feeds
 // inline bodies only for sources that explicitly allow redistribution. Titles come from the site's
 // name and categories.
-import { feedCategoryLabel, PUBLIC_API_CATEGORY_KEYS, toPublicApiCategory, type PublicApiCategoryKey } from "@aihot/contracts/taxonomy";
+import { DEFAULT_CATEGORIES, feedCategoryLabel, publicApiCategoryKeys, toPublicApiCategory, type CategoryDefinition, type PublicApiCategoryKey } from "@aihot/contracts/taxonomy";
 import { EDITION_WHEN, FEED_COPY, REPORTS, SITE, subjectAfter } from "@aihot/site";
 import { config } from "../config.ts";
+import { loadCategories } from "./categories.ts";
 import { sql } from "../db.ts";
 import { escapeXml } from "../lib/text.ts";
 import { proxyBodyImages } from "../media/imgproxy.ts";
@@ -125,12 +126,12 @@ function fullContent(r: FeedRow, aihot: string): string | null {
   return `${proxyBodyImages(html, true, FEED_IMAGE_SECONDS)}<p>—— 本文由 ${escapeXml(SITE.name)} 聚合整理，完整版与${escapeXml(subjectAfter("更多", "动态"))}见 <a href="${aihot}">${aihot}</a></p>`;
 }
 
-function itemXml(r: FeedRow, includeContent: boolean): string {
+function itemXml(r: FeedRow, includeContent: boolean, categories: readonly CategoryDefinition[]): string {
   const aihot = itemUrl(r.id);
   const summary = r.summary ?? "";
   const description = `<p>${escapeXml(summary)}</p>\n<p>🔗 <a href="${escapeXml(r.url)}">阅读原文</a></p>\n<p>via ${escapeXml(SITE.name)} · <a href="${aihot}">${aihot}</a></p>`;
   const publicCategory = toPublicApiCategory(r.category);
-  const category = publicCategory ? `\n      <category>${escapeXml(feedCategoryLabel(publicCategory))}</category>` : "";
+  const category = publicCategory ? `\n      <category>${escapeXml(feedCategoryLabel(publicCategory, categories))}</category>` : "";
   let content = "";
   if (includeContent && r.syndicate) {
     const html = fullContent(r, aihot);
@@ -154,7 +155,8 @@ export type ItemFeedKind = "selected" | "selected-full" | "all";
 /** A reminder for the feed at a path, or none (routes/feeds.ts asks the modules). */
 type NoticeFor = (feedPath: string) => FeedNotice | null;
 
-export async function itemFeed(kind: ItemFeedKind, category: PublicApiCategoryKey | null, { now = new Date(), notice }: { now?: Date; notice?: NoticeFor } = {}): Promise<string> {
+export async function itemFeed(kind: ItemFeedKind, category: PublicApiCategoryKey | null, { now = new Date(), notice, categories: definitions }: { now?: Date; notice?: NoticeFor; categories?: readonly CategoryDefinition[] } = {}): Promise<string> {
+  const categories = definitions ?? await loadCategories();
   const includeContent = kind === "selected-full";
   const scope = kind === "all"
     ? sql`${listedCondition(now)} AND coalesce(p.published_at, p.discovered_at) > ${now}::timestamptz - interval '7 days'
@@ -178,7 +180,7 @@ export async function itemFeed(kind: ItemFeedKind, category: PublicApiCategoryKe
   const m = feedMeta(kind);
   let meta = { title: m.title, description: m.description, homePath: m.homePath, selfPath: m.path, ttl: m.pollHintMinutes };
   if (category) {
-    const label = feedCategoryLabel(category);
+    const label = feedCategoryLabel(category, categories);
     meta = {
       title: includeContent ? `${SITE.name} — ${label}全文` : `${SITE.name} — ${label}`,
       description: includeContent
@@ -189,7 +191,7 @@ export async function itemFeed(kind: ItemFeedKind, category: PublicApiCategoryKe
       ttl: m.pollHintMinutes,
     };
   }
-  const items = rows.map((r) => itemXml(r, includeContent));
+  const items = rows.map((r) => itemXml(r, includeContent, categories));
   const first = notice?.(meta.selfPath);
   if (first) items.unshift(noticeXml(first));
   return channel(meta, items);
@@ -226,6 +228,6 @@ export async function reportFeed(kind: ReportKind, notice?: NoticeFor): Promise<
   return channel(meta, items);
 }
 
-export function isFeedCategory(v: string): v is PublicApiCategoryKey {
-  return (PUBLIC_API_CATEGORY_KEYS as readonly string[]).includes(v);
+export function isFeedCategory(v: string, categories: readonly CategoryDefinition[] = DEFAULT_CATEGORIES): v is PublicApiCategoryKey {
+  return publicApiCategoryKeys(categories).includes(v);
 }

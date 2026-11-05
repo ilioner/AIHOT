@@ -129,16 +129,20 @@ export interface PoolQuery extends TimelineFilters {
 }
 
 // Identical searches share their read before taking search capacity.
+import { loadCategories, publicCategoryViews } from "./categories.ts";
+import type { CategoryDefinition } from "@aihot/contracts/taxonomy";
+type ClassifiedPoolQuery = PoolQuery & { categories: readonly CategoryDefinition[] };
+
 const searchPool = sharedSearch(
-  (q: PoolQuery) => JSON.stringify([q.channel, q.category, q.tag, q.q, q.tab, q.page]),
+  (q: ClassifiedPoolQuery) => JSON.stringify([q.channel, q.category, q.tag, q.q, q.tab, q.page, q.categories]),
   queryPool, (q) => !!q.q?.trim(),
 );
 
-export function loadPool(query: PoolQuery): Promise<PoolResponse> {
-  return searchPool(query, query.now);
+export async function loadPool(query: PoolQuery, categories?: readonly CategoryDefinition[]): Promise<PoolResponse> {
+  return searchPool({ ...query, categories: categories ?? await loadCategories() }, query.now);
 }
 
-async function queryPool(query: PoolQuery, now: Date): Promise<PoolResponse> {
+async function queryPool(query: ClassifiedPoolQuery, now: Date): Promise<PoolResponse> {
   const page = Math.min(Math.max(query.page ?? 1, 1), POOL_MAX_PAGES);
   const q = query.q?.trim() || null;
   const tab = q && query.tab === "relevance" ? "relevance" : "time";
@@ -234,7 +238,8 @@ async function queryPool(query: PoolQuery, now: Date): Promise<PoolResponse> {
   const holders = await seatHolders(rows, now);
   return {
     filters: { channel: query.channel, category: query.category, tag: query.tag, q, tab },
-    items: rows.map((r) => (holders.has(r.id) ? { ...toFeedItemSummary(r), reason: null, sameEvent: holders.get(r.id)! } : toFeedItemSummary(r))),
+    categories: publicCategoryViews(query.categories),
+    items: rows.map((r) => (holders.has(r.id) ? { ...toFeedItemSummary(r, query.categories), reason: null, sameEvent: holders.get(r.id)! } : toFeedItemSummary(r, query.categories))),
     page,
     pageCount: Math.min(POOL_MAX_PAGES, Math.max(1, Math.ceil(total / POOL_PAGE_SIZE))),
     total,

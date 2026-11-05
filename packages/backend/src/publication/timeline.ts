@@ -1,6 +1,8 @@
 // Selected news timeline: ordinary reports fold by fact; standalone and independent-source articles
 // keep their own cards. Each ordinary fact stays at its first appearance.
 import type { GroupInfo, TimelineCard, TimelineFilters, TimelineResponse } from "@aihot/contracts/site";
+import type { CategoryDefinition } from "@aihot/contracts/taxonomy";
+import { loadCategories, publicCategoryViews } from "./categories.ts";
 import { beijingDate, beijingMidnight } from "@aihot/contracts/time";
 import { sql } from "../db.ts";
 import { cachedByKey } from "../lib/cache.ts";
@@ -85,7 +87,8 @@ export function countTimelineDays(grouped: readonly { anchor: number }[], days: 
   return counts;
 }
 
-export async function loadTimeline(q: TimelineQuery): Promise<Omit<TimelineResponse, "hot">> {
+export async function loadTimeline(q: TimelineQuery, definitions?: readonly CategoryDefinition[]): Promise<Omit<TimelineResponse, "hot">> {
+  const categories = definitions ?? await loadCategories();
   const now = q.now ?? new Date();
   const limit = Math.min(Math.max(q.limit ?? 20, 1), 40);
   const bind = binding(q);
@@ -151,7 +154,7 @@ export async function loadTimeline(q: TimelineQuery): Promise<Omit<TimelineRespo
   const cards: TimelineCard[] = planned.flatMap(({ id, key, anchorAt, group }) => {
     const row = rows.get(id);
     if (!row) return [];
-    return [{ key, anchorAt, item: toFeedItemSummary(row), group }];
+    return [{ key, anchorAt, item: toFeedItemSummary(row, categories), group }];
   });
 
   // Day header counts for the days on this page, over the full grouped set.
@@ -160,5 +163,5 @@ export async function loadTimeline(q: TimelineQuery): Promise<Omit<TimelineRespo
 
   const last = page[page.length - 1];
   const nextCursor = hasMore && last ? encodeCursor("tl2", { a: last.anchor_at.getTime(), g: last.gk, b: bind }) : null;
-  return { filters: { channel: q.channel, category: q.category, tag: q.tag }, cards, nextCursor, dayCounts };
+  return { categories: publicCategoryViews(categories), filters: { channel: q.channel, category: q.category, tag: q.tag }, cards, nextCursor, dayCounts };
 }

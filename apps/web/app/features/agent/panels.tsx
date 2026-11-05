@@ -5,7 +5,6 @@ import { Fragment, useState } from "react";
 import { Link } from "react-router";
 import { PUBLIC_INTERFACE_VERSION } from "@aihot/contracts/http-policy";
 import { MCP_TOOL_NAMES as T, MCP_TOOLS } from "@aihot/contracts/mcp";
-import { feedCategoryLabel, PUBLIC_API_CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
 import { ACCESS, AGENT, EDITION_WHEN, POLICY, REPORTS, SITE, subjectAfter, withSubject } from "@aihot/site";
 import { CodeBlock, CopyButton } from "./CodeBlock";
 import { PillTabs } from "../../components/ui/Tabs";
@@ -114,9 +113,6 @@ const FEEDS = [
   { name: withSubject("月报"), path: "/feed/monthly.xml", desc: `${EDITION_WHEN.monthly}（北京时间）一期：总述加按栏目分好的${REPORTS.entry.noun}，保留最近 12 期。` },
 ];
 
-/** The category feeds, under the names the feeds themselves use. */
-const FEED_CATEGORIES = PUBLIC_API_CATEGORY_KEYS.map((key) => [key, feedCategoryLabel(key)] as const);
-
 export function RssPanel(props: AgentPanelProps) {
   const { base } = props;
   const lead = `${["兼容主流 RSS 2.0 阅读器，也能接 n8n、Zapier 这类自动化工具。地址长期不变", ...AGENT_PARTS.flatMap((a) => a.rssLead ?? [])].join("；")}。`;
@@ -146,8 +142,8 @@ export function RssPanel(props: AgentPanelProps) {
         <Table
           head={["分类", "摘要", "全文"]}
           minWidth={420}
-          rows={FEED_CATEGORIES.map(([slug, label]) => [
-            <span className="font-medium text-ink">{label}</span>,
+          rows={props.categories.filter((c) => c.enabled).map(({ key: slug, feedLabel, label }) => [
+            <span className="font-medium text-ink">{feedLabel || label}</span>,
             <span className="inline-flex items-center gap-2"><Mono>{`/feed/category/${slug}.xml`}</Mono><CopyButton text={addressOf(props, `/feed/category/${slug}.xml`)} className="!h-6 !px-1.5" /></span>,
             <span className="inline-flex items-center gap-2"><Mono>{`/feed/full/category/${slug}.xml`}</Mono><CopyButton text={addressOf(props, `/feed/full/category/${slug}.xml`)} className="!h-6 !px-1.5" /></span>,
           ])}
@@ -185,7 +181,7 @@ export function ApiPanel(props: AgentPanelProps) {
 
       <Block title="按分类筛选">
         <p>在资讯请求中加上 <Mono>category</Mono>，只取对应分类；不传则包含全部分类。返回条目的 <Mono>category</Mono> 也使用下表中的值。</p>
-        <Table head={["分类", "请求参数"]} rows={FEED_CATEGORIES.map(([key, name]) => [name, <Mono>{`category=${key}`}</Mono>])} />
+        <Table head={["分类", "请求参数"]} rows={props.categories.filter((c) => c.enabled).map(({ key, feedLabel, label }) => [feedLabel || label, <Mono>{`category=${key}`}</Mono>])} />
       </Block>
 
       <Block title="用得省，也更快">

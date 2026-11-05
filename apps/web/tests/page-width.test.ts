@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium, webkit, expect, type Browser, type Page } from "@playwright/test";
 import type { ReportDetail, ReportKind } from "@aihot/contracts/site";
-import { FIXTURE_AT as at, fakeApi, feedItem, startWebServer, visit, type WebServer } from "./web-server.ts";
+import { FIXTURE_AT as at, fakeApi, fixtureCategories, feedItem, startWebServer, visit, type WebServer } from "./web-server.ts";
 
 const longText = "查看完整说明 https://example.org/announcements/" + "a".repeat(100) + "。";
 const longTitle = "一条很长的标题".repeat(30);
@@ -16,7 +16,7 @@ const api = fakeApi((url) => {
   const path = url.pathname;
   if (path === "/api/site/topics") return { groups: [], topics: [] };
   if (path === "/api/site/hot") return { computedAt: at, windowHours: 48, entries: [] };
-  if (path === "/api/site/timeline") return { filters: { channel: "all", category: null, tag: null }, cards: [groupCard], nextCursor: null, hot: null, dayCounts: { "2026-10-04": 1 } };
+  if (path === "/api/site/timeline") return { categories: fixtureCategories, filters: { channel: "all", category: null, tag: null }, cards: [groupCard], nextCursor: null, hot: null, dayCounts: { "2026-10-04": 1 } };
   if (path === "/api/site/groups/f1/reports") {
     return { factId: "f1", reports: [
       { id: "rep-1", title: "代表文章", source: { name: "Fixture" }, timelineAt: at, originalUrl: "https://example.org/1" },

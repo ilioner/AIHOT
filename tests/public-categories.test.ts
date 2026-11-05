@@ -10,10 +10,12 @@ import { closeDb, sql } from "@aihot/backend/db";
 import { itemFeed } from "@aihot/backend/publication/feeds";
 import { loadTimeline } from "@aihot/backend/publication/timeline";
 import { v1Items } from "@aihot/backend/publication/v1";
-import { CATEGORY_KEYS, PUBLIC_API_CATEGORY_KEYS, toPublicApiCategory } from "@aihot/contracts/taxonomy";
+import { CATEGORY_KEYS, DEFAULT_CATEGORIES, PUBLIC_API_CATEGORY_KEYS, toPublicApiCategory } from "@aihot/contracts/taxonomy";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { MCP_TOOL_NAMES } from "@aihot/contracts/mcp";
 import { buildApp } from "../apps/api/src/app.ts";
+import { updateCategories } from "@aihot/backend/admin/settings";
+import { loadItemOgCard } from "@aihot/backend/publication/og";
 
 const T = tag();
 const SOURCE = `categories-${T}`;
@@ -64,10 +66,9 @@ test("HTTP, Agent, MCP and discovery agree on the public categories and returned
     const parameter = spec.paths[path].get.parameters.find((p: { name?: string }) => p.name === 'category');
     assert.deepEqual(parameter.schema.examples ?? parameter.schema.enum, [...PUBLIC_API_CATEGORY_KEYS], path);
   }
-  const tools = await client.listTools();
   for (const name of [MCP_TOOL_NAMES.latest, MCP_TOOL_NAMES.search]) {
-    const schema = tools.tools.find((tool) => tool.name === name)?.inputSchema.properties?.category as { enum: string[] };
-    assert.deepEqual(schema.enum, [...PUBLIC_API_CATEGORY_KEYS], name);
+    const invalid = await client.callTool({ name, arguments: { category: "unknown-category", ...(name === MCP_TOOL_NAMES.search ? { q: T } : {}) } });
+    assert.equal(invalid.isError, true, "MCP validates current category membership at invocation time");
   }
   for (const key of PUBLIC_API_CATEGORY_KEYS) {
     const want = CATEGORY_KEYS.filter((k) => toPublicApiCategory(k) === key).map(title).sort();
@@ -90,5 +91,58 @@ test("HTTP, Agent, MCP and discovery agree on the public categories and returned
       assert.deepEqual(ours(items.map((item) => item.title)), want);
       assert.ok(items.every((item) => item.category === key));
     }
+  }
+});
+
+test("new and disabled categories work without a restart across public exits and invalidate labels and discovery", async () => {
+  const extra = { key: "runtime-category", label: "运行时分类", tag: "运行时首标签", section: "运行时栏目", guide: "不应公开的分类指导", tagColor: "gray", enabled: true };
+  const categories = [extra, ...DEFAULT_CATEGORIES];
+  const specBefore = await app.inject("/openapi-v1.json");
+  await updateCategories({ categories, reason: "public category fixture" }, "test");
+  const id = `${T}-runtime`;
+  await sql`INSERT INTO articles (id, source_id, identity_key, url, title, discovered_at, timeline_at, published_at)
+    VALUES (${id}, ${SOURCE}, ${id}, ${`https://example.org/${id}`}, ${title(extra.key)}, ${at}, ${at}, ${at})`;
+  await sql`INSERT INTO publications (article_id, title, summary, source_id, channel, url, discovered_at, timeline_at, published_at, sort_at,
+    eligible, selected, visible_after, visibility, tags, category, search_text)
+    VALUES (${id}, ${title(extra.key)}, '测试摘要', ${SOURCE}, 'news', ${`https://example.org/${id}`}, ${at}, ${at}, ${at}, ${at},
+      true, true, ${at}, 'public', ${[extra.tag]}, ${extra.key}, ${title(extra.key)})`;
+  try {
+    const paths = [
+      `/api/site/timeline?category=${extra.key}`, `/api/site/pool?category=${extra.key}`,
+      `/api/v1/items?category=${extra.key}`, `/api/v1/agent/latest?category=${extra.key}`,
+      `/api/v1/agent/search?q=${T}&category=${extra.key}`, `/feed/category/${extra.key}.xml`,
+    ];
+    for (const path of paths) {
+      const response = await app.inject(path);
+      assert.equal(response.statusCode, 200, `${path}: ${response.body}`);
+      assert.ok(response.body.includes(id) || response.body.includes(title(extra.key)), path);
+    }
+    const oldPool = await app.inject(`/api/site/pool?category=${extra.key}`);
+    const spec = await app.inject({ url: "/openapi-v1.json", headers: { "if-none-match": specBefore.headers.etag! } });
+    assert.equal(spec.statusCode, 200);
+    assert.ok(spec.body.includes(extra.key));
+    for (const path of ["/api/v1/agent", "/llms.txt", "/api/site/categories"]) {
+      const response = await app.inject(path);
+      assert.ok(response.body.includes(extra.key), path);
+      assert.ok(!response.body.includes(extra.guide), "private instructions stay private");
+    }
+    for (const name of [MCP_TOOL_NAMES.latest, MCP_TOOL_NAMES.search]) {
+      const result = await client.callTool({ name, arguments: { category: extra.key, ...(name === MCP_TOOL_NAMES.search ? { q: T } : {}) } });
+      assert.notEqual(result.isError, true);
+      assert.equal((result.structuredContent as { items: { category: string }[] }).items[0]!.category, extra.key);
+    }
+    const changed = categories.map(c => c.key === extra.key ? { ...c, enabled: false, label: "已改名分类" } : c);
+    await updateCategories({ categories: changed, reason: "rename and disable" }, "test");
+    const pool = await app.inject({ url: `/api/site/pool?category=${extra.key}`, headers: { "if-none-match": oldPool.headers.etag! } });
+    assert.equal(pool.statusCode, 200, "taxonomy changes bypass the old search cache and ETag");
+    assert.equal(pool.json().items[0].categoryLabel, "已改名分类");
+    assert.equal(pool.json().categories.find((c: { key: string }) => c.key === extra.key).enabled, false);
+    for (const path of paths) assert.equal((await app.inject(path)).statusCode, 200, "disabled category URLs survive");
+    const detail = (await app.inject(`/api/site/items/${id}`)).json();
+    assert.equal(detail.categoryLabel, "已改名分类");
+    assert.equal((await loadItemOgCard(id))?.kicker, "已改名分类");
+    assert.match((await app.inject(`/feed/category/${extra.key}.xml`)).body, /已改名分类/);
+  } finally {
+    await sql`DELETE FROM settings WHERE key = 'categories'`;
   }
 });

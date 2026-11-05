@@ -5,11 +5,14 @@ import type { AdminBudget, AdminNotifyTarget, AdminSettings, BeforeJson } from "
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
+import { z } from "zod";
 import { config } from "../config.ts";
 import { sql } from "../db.ts";
 import { sha256 } from "../lib/ids.ts";
 import { loadContact, type ContactSettings } from "../site/contact.ts";
 import { audit } from "../audit.ts";
+import { CategoriesSchema, loadCategories } from "../taxonomy.ts";
+import type { CategoryDefinition } from "@aihot/contracts/taxonomy";
 
 const MAX_QR_BYTES = 2 * 1024 * 1024;
 
@@ -34,8 +37,26 @@ export async function replaceContactQr(input: { slot: keyof ContactSettings; dat
 
 /** The settings page: contact QR codes, content push targets and paid-service budgets. */
 export async function settingsOverview(): Promise<BeforeJson<AdminSettings>> {
-  const [contact, targets, budgets] = await Promise.all([loadContact(), listTargets(), listBudgets()]);
-  return { contact, targets, budgets };
+  const [contact, targets, budgets, categories] = await Promise.all([loadContact(), listTargets(), listBudgets(), loadCategories()]);
+  return { contact, targets, budgets, categories };
+}
+
+/** Keep existing identities and first tags: old URLs, articles and reports refer to them. */
+const CategoriesUpdate = z.object({ categories: CategoriesSchema, reason: z.string().trim().min(1).max(1000) }).strict();
+
+export async function updateCategories(input: unknown, actor: string): Promise<CategoryDefinition[]> {
+  const { categories: next, reason } = CategoriesUpdate.parse(input);
+  return sql.begin(async (tx) => {
+    const before = await loadCategories(tx);
+    for (const prior of before) {
+      const current = next.find(c => c.key === prior.key);
+      if (!current || current.tag !== prior.tag) throw Object.assign(new Error("已有分类 key 和首标签不能删除或修改，请停用该分类"), { statusCode: 400 });
+    }
+    await tx`INSERT INTO settings (key, value, updated_by) VALUES ('categories', ${tx.json(next as never)}, ${actor})
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`;
+    await audit(actor, "settings.categories", "settings:categories", reason, before, next, { db: tx });
+    return next;
+  }) as Promise<CategoryDefinition[]>;
 }
 
 export async function listTargets(): Promise<BeforeJson<AdminNotifyTarget>[]> {

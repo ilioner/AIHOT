@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
 import { upsertMaterial } from "@aihot/backend/content/materials";
-import { analyzeArticle, buildMaterial, loadAnalyzeInput, normalizeStructure, runSelectionPrefilter, runSelectionScores, StructureSchema, tierThreshold, UNDERSTAND_FLOOR } from "@aihot/backend/editorial/analyze";
+import { runStructure, structureSystem, analyzeArticle, buildMaterial, loadAnalyzeInput, normalizeStructure, runSelectionPrefilter, runSelectionScores, StructureSchema, tierThreshold, UNDERSTAND_FLOOR } from "@aihot/backend/editorial/analyze";
 import { invalidateModelCache } from "@aihot/backend/editorial/models";
 import { ModelOutputError } from "@aihot/backend/providers/receipts";
 import { queueProcessing } from "@aihot/backend/jobs/content";
@@ -18,6 +18,8 @@ import { QUEUES, stopBoss } from "@aihot/backend/jobs/queue";
 import { compactAnswerFirstSummary, enforceIdentity, MAX_BODY_CHARS, parseTranslateOutput } from "@aihot/backend/editorial/writing";
 import { READER_WORDING } from "@aihot/industry/wording";
 import { ITEM_TYPES } from "@aihot/industry/taxonomy";
+import { DEFAULT_CATEGORIES } from "@aihot/contracts/taxonomy";
+import { updateCategories } from "@aihot/backend/admin/settings";
 
 const T = tag();
 const SOURCE = `test-analyze-${T}`;
@@ -106,6 +108,37 @@ test("a selected item: prefilter, two scores, the content understanding and the 
   assert.equal(r.output.fact.evidence, "a ministry released a vocational education policy");
   const score = requests.find((q) => q.marker === "CLEAR" && q.step === "score")!;
   assert.match(score.user, /【标题】\nCLEAR policy release/, "the score reads the original title, before any writing");
+});
+
+test("structure uses newly saved categories and first tags, then excludes a disabled category on its next invocation", async () => {
+  const extra = { key: "runtime-test", label: "新增类别", tag: "新增首标签", section: "新增栏目", guide: "只按正文中的新增资料类型分类", tagColor: "gray", enabled: true };
+  let categories = [...DEFAULT_CATEGORIES, extra];
+  const systems: string[] = [];
+  const local = await stub((_hit, req) => {
+    systems.push(JSON.parse(req.body).messages[0].content);
+    return { choices: [{ message: { content: JSON.stringify({ category: extra.key, tags: [extra.tag], subjects: [], scope: "single", fact: null }) } }], usage: { prompt_tokens: 10, completion_tokens: 5 } };
+  });
+  pointModels(local.url);
+  try {
+    await updateCategories({ categories, reason: "new category" }, "test");
+    const input = await loadAnalyzeInput(await article("DYNAMIC"));
+    assert.ok(input);
+    const first = await runStructure(input);
+    assert.equal(first.category, extra.key);
+    assert.deepEqual(first.tags, [extra.tag]);
+    assert.equal(systems[0], structureSystem(categories));
+    categories = categories.map(c => c.key === extra.key ? { ...c, enabled: false } : c);
+    await updateCategories({ categories, reason: "disable category" }, "test");
+    const second = await runStructure(input);
+    assert.equal(second.category, null, "a stale provider response cannot assign a disabled category");
+    assert.ok(!second.tags.includes(extra.tag));
+    assert.equal(systems.length, 2, "changed system prompt has a different paid receipt identity");
+    assert.ok(!systems[1]!.includes(extra.guide));
+  } finally {
+    pointModels(provider.url);
+    await local.close();
+    await sql`DELETE FROM settings WHERE key = 'categories'`;
+  }
 });
 
 test("a word the site keeps from readers goes back once to be changed; copy without one is not sent", async () => {

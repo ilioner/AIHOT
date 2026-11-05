@@ -2,6 +2,8 @@
 // functions and the admin pages. Only administrators reach it; it changes with the admin UI and is
 // never a public contract. Rows mirror their SQL columns (snake_case); timestamps are ISO strings.
 
+import type { CategoryDefinition } from "./taxonomy.ts";
+
 declare const iso: unique symbol;
 
 /** An ISO 8601 time in a JSON body. The pages read it as a string; the api may produce it from a Date. */
@@ -208,6 +210,7 @@ export interface AdminPublication {
 
 /** An item's whole chain: source → discoveries → revisions → judgements → publication → grouping → deliveries. */
 export interface AdminContentChain {
+  categories: CategoryDefinition[];
   article: {
     id: string; source_id: string; url: string; identity_key: string; title: string; author: string | null; language: string | null;
     published_at: Timestamp | null; published_at_claim: string | null; discovered_at: Timestamp; timeline_at: Timestamp; backfill: boolean;
@@ -336,10 +339,12 @@ export interface AdminBudget {
   used_hour: number;
 }
 
+
 export interface AdminSettings {
   contact: { wechatQr: string | null; feishuQr: string | null };
   targets: AdminNotifyTarget[];
   budgets: AdminBudget[];
+  categories: CategoryDefinition[];
 }
 
 // Models and evaluation

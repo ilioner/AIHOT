@@ -2,9 +2,9 @@
 import { sql } from "../db.ts";
 import { itemUrl } from "../publication/links.ts";
 import { publicSourceName } from "../publication/rules.ts";
-import { type CategoryKey } from "@aihot/contracts/taxonomy";
+import { type CategoryDefinition, type CategoryKey } from "@aihot/contracts/taxonomy";
 import { beijingDay } from "@aihot/contracts/time";
-import { CATEGORIES } from "@aihot/industry/taxonomy";
+import { loadCategories } from "../taxonomy.ts";
 import { ITEM_COPY, SITE } from "@aihot/site";
 
 const MAX_AGE_MS = 12 * 3600_000;
@@ -42,9 +42,9 @@ const link = (label: string, url: string, type: string) => ({
 });
 
 // Card JSON 2.0: a header title has one fixed size, so the title is the first body line, a size above the summary.
-function card(r: Row) {
-  const category = CATEGORIES.find((c) => c.key === r.category);
-  const tag = category ? ` <text_tag color='${category.tagColor}'>${category.label}</text_tag>` : "";
+function card(r: Row, categories: readonly CategoryDefinition[]) {
+  const category = categories.find((c) => c.key === r.category);
+  const tag = category ? ` <text_tag color='${category.tagColor}'>${literal(category.label)}</text_tag>` : "";
   return {
     schema: "2.0",
     config: { style: { text_size: { title: { default: "heading-3", pc: "heading-3", mobile: "heading-4" } } } },
@@ -76,5 +76,6 @@ export async function selectedContent(articleId: string, now = new Date()): Prom
   if (!PUSH_TIERS.includes(r.source_tier)) return { status: "skipped", reason: "not a first-party source" };
   if (r.backfill || now.getTime() - r.timeline_at.getTime() > MAX_AGE_MS) return { status: "skipped", reason: "not live" };
 
-  return { status: "ready", article: r, card: card(r) };
+  const categories = await loadCategories();
+  return { status: "ready", article: r, card: card(r, categories) };
 }

@@ -4,22 +4,25 @@
 // the event's other developments listed under it; an event an earlier issue covered comes back only
 // with a new fact; an event with an official post and three or more independent participants is
 // carried even when none of its reports was selected; entries rank by importance (score, the day's
-// independent participants, first-hand), and the first one leads. Sections are the industry pack's
-// (industry/taxonomy.ts CATEGORIES).
+// independent participants, first-hand), and the first one leads. Sections and commentary follow the
+// issue's runtime category snapshot, including definitions kept for disabled categories.
 import { addDays } from "@aihot/contracts/time";
-import { CATEGORIES } from "@aihot/industry/taxonomy";
+import { DEFAULT_CATEGORIES, type CategoryDefinition } from "@aihot/contracts/taxonomy";
 import { sql } from "../db.ts";
 import { currentSignals } from "../events/hot.ts";
 import { pickRepresentative, representativePriority, REPRESENTATIVE_COLUMNS, type RepresentativeIdentity } from "../publication/representative.ts";
 import { factSources } from "../publication/coverage.ts";
 import { evidenceCondition, listedCondition, ownFactEvidenceCondition } from "../publication/scope.ts";
 
-/** Each category's section; several categories may share one, in the order the pack lists them. */
-export const SECTION_OF: Record<string, string> = Object.fromEntries(CATEGORIES.map((c) => [c.key, c.section]));
-export const SECTION_ORDER: readonly string[] = [...new Set(CATEGORIES.map((c) => c.section))];
-/** An item without a category goes into the section of the industry category, else into the last one. */
-const DEFAULT_SECTION = SECTION_OF.industry ?? SECTION_ORDER.at(-1)!;
-export const sectionOf = (category: string | null) => SECTION_OF[category ?? ""] ?? DEFAULT_SECTION;
+/** Several categories may share a section; disabled categories still define where older items belong. */
+export function reportSections(categories: readonly CategoryDefinition[]) {
+  const sections = new Map(categories.map((c) => [c.key, c.section]));
+  const order = [...new Set(categories.map((c) => c.section))];
+  // An uncategorised item belongs to the industry's section, or the last section when there is none.
+  const fallback = sections.get("industry") ?? order.at(-1)!;
+  return { order, sectionOf: (category: string | null) => sections.get(category ?? "") ?? fallback };
+}
+
 
 /** A daily's size: the entries readers get in full, and the one-line flashes after them. */
 export const MAIN_ENTRIES = 12;
@@ -28,8 +31,6 @@ export const FLASH_ENTRIES = 10;
 const PER_SOURCE = 2;
 /** A follow-up of a covered event takes a full entry when this many sources carry its new facts. */
 const FOLLOW_UP_SOURCES = 4;
-/** The pack's `commentary` categories (how-tos, opinions): a follow-up of theirs is a flash, whoever wrote it. */
-const COMMENTARY = new Set<string>(CATEGORIES.filter((c) => "commentary" in c).map((c) => c.key));
 /** Earlier issues a daily remembers. */
 const MEMORY_DAYS = 7;
 
@@ -376,7 +377,8 @@ export async function dailyEdition(date: string, start: Date, end: Date): Promis
  * then the most important entries in full, at most two per source, and the next ones as flashes. The
  * first entry leads the issue and the next three are its highlights.
  */
-export function arrangeDaily(entries: EditionEntry[]): { main: EditionEntry[]; flashes: EditionEntry[]; stats: Record<string, number> } {
+export function arrangeDaily(entries: EditionEntry[], categories: readonly CategoryDefinition[] = DEFAULT_CATEGORIES): { main: EditionEntry[]; flashes: EditionEntry[]; stats: Record<string, number> } {
+  const commentary = new Set(categories.filter((c) => c.commentary === true).map((c) => c.key));
   const byStory = new Map(entries.filter((e) => e.storyId !== null).map((e) => [e.storyId!, e]));
   const under = new Map<EditionEntry, EditionEntry[]>();
   for (const e of entries) {
@@ -393,7 +395,7 @@ export function arrangeDaily(entries: EditionEntry[]): { main: EditionEntry[]; f
     const related = [...(e.entry.related ?? []), ...roundups.flatMap((r) => [asRelated(r.entry), ...(r.entry.related ?? [])])];
     return { ...e, sourceIds, entry: { ...e.entry, sources: sourceIds.size, related } };
   });
-  const earned = (e: EditionEntry) => !e.previous || (e.authority < 3 && !COMMENTARY.has(e.category ?? "")) || e.entry.sources >= FOLLOW_UP_SOURCES;
+  const earned = (e: EditionEntry) => !e.previous || (e.authority < 3 && !commentary.has(e.category ?? "")) || e.entry.sources >= FOLLOW_UP_SOURCES;
   // A day of nothing but follow-ups still has entries in full.
   const full = live.some(earned) ? earned : () => true;
   const main: EditionEntry[] = [];

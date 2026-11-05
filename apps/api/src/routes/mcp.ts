@@ -9,7 +9,8 @@ import { z } from "zod";
 import { POLICY, SITE } from "@aihot/site";
 import { PUBLIC_INTERFACE_VERSION } from "@aihot/contracts/http-policy";
 import { MCP_TOOL_NAMES as T, mcpToolName } from "@aihot/contracts/mcp";
-import { PUBLIC_API_CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
+import { publicApiCategoryKeys } from "@aihot/contracts/taxonomy";
+import { loadCategories } from "@aihot/backend/publication/categories";
 import { isValidDate } from "@aihot/contracts/time";
 import { config } from "@aihot/backend/config";
 import { cachedByKey } from "@aihot/backend/lib/cache";
@@ -71,7 +72,7 @@ function safe<A>(tool: string, run: (args: A) => Promise<ReturnType<typeof ok> |
   };
 }
 
-const category = z.enum(PUBLIC_API_CATEGORY_KEYS).optional().describe(`Optional category: ${PUBLIC_API_CATEGORY_KEYS.join(", ")}.`);
+const category = z.string().max(60).optional().describe("Optional category key from /api/v1/agent. Validated against current categories when called.");
 
 // Tool inputs are built once; each request's server instance registers the same schemas.
 const LATEST_INPUT = z.strictObject({
@@ -135,9 +136,11 @@ function registerTools(server: McpServer, say: typeof ok) {
       annotations: ANNOTATIONS,
     },
     safe(T.latest, async (args) => {
+      const categories = await loadCategories();
+      if (args.category !== undefined && !publicApiCategoryKeys(categories).includes(args.category)) return fail("invalid_request", "未知分类，请从 /api/v1/agent 查看当前类别。");
       const query = { mode: args.mode, window: args.window, by: "timeline", category: args.category ?? null, q: null, limit: args.limit, cursor: null } as const;
       const res = await recent(`items:${JSON.stringify(query)}`, () => v1Items(query));
-      return say(latestAnswer(res, { window: args.window, mode: args.mode, category: args.category ?? null, limit: args.limit }), { schemaVersion: 1, query: res.query, items: res.items });
+      return say(latestAnswer(res, { window: args.window, mode: args.mode, category: args.category ?? null, limit: args.limit }, categories), { schemaVersion: 1, query: res.query, items: res.items });
     }),
   );
 
@@ -149,11 +152,13 @@ function registerTools(server: McpServer, say: typeof ok) {
       annotations: ANNOTATIONS,
     },
     safe(T.search, async (args) => {
+      const categories = await loadCategories();
+      if (args.category !== undefined && !publicApiCategoryKeys(categories).includes(args.category)) return fail("invalid_request", "未知分类，请从 /api/v1/agent 查看当前类别。");
       const q = args.q.trim();
       if (q.includes("\0")) return fail("invalid_request", "搜索词不能包含 NUL 字符。");
       if ([...q].length < 2) return fail("invalid_request", "搜索词需要 2 到 200 个字符。");
       const found = await searchItems(q, args.window, args.category ?? null, args.limit, (query) => recent(`items:${JSON.stringify(query)}`, () => v1Items(query)));
-      return say(searchAnswer(found, { q, window: args.window, category: args.category ?? null }), { schemaVersion: 1, query: found.res.query, items: found.res.items });
+      return say(searchAnswer(found, { q, window: args.window, category: args.category ?? null }, categories), { schemaVersion: 1, query: found.res.query, items: found.res.items });
     }),
   );
 

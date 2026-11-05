@@ -1,6 +1,6 @@
 // First-party site API (/api/site/*). Not a public API: it may evolve with the website,
 // but it is served from the same public read layer as v1, RSS and MCP.
-import type { CategoryKey, ChannelKey } from "./taxonomy.ts";
+import type { CategoryKey, ChannelKey, PublicCategoryView } from "./taxonomy.ts";
 import { isoWeekRange, monthDay } from "./time.ts";
 
 export interface SourceRef {
@@ -50,6 +50,7 @@ export interface ItemSummary {
   discoveredAt: string;
   timelineAt: string;
   category: CategoryKey | null;
+  categoryLabel: string | null;
   tags: string[];
   score: number | null;
   selected: boolean;
@@ -58,7 +59,7 @@ export interface ItemSummary {
 }
 
 /** The fields rendered by a site feed card; full original text lives in the item detail. */
-export interface FeedItemSummary extends Pick<ItemSummary, "id" | "title" | "summary" | "reason" | "source" | "publishedAt" | "timelineAt" | "category" | "tags" | "score" | "selected" | "channel"> {
+export interface FeedItemSummary extends Pick<ItemSummary, "id" | "title" | "summary" | "reason" | "source" | "publishedAt" | "timelineAt" | "category" | "categoryLabel" | "tags" | "score" | "selected" | "channel"> {
   x: (Pick<XPostView, "authorName" | "handle" | "avatarUrl" | "avatarSrcSet" | "media"> & {
     quoted: Omit<NonNullable<XPostView["quoted"]>, "url"> | null;
   }) | null;
@@ -108,6 +109,7 @@ export interface TimelineFilters {
 
 export interface TimelineResponse {
   filters: TimelineFilters;
+  categories: PublicCategoryView[];
   cards: TimelineCard[];
   nextCursor: string | null;
   hot: HotStripEntry[] | null;
@@ -116,6 +118,7 @@ export interface TimelineResponse {
 
 export interface PoolResponse {
   filters: TimelineFilters & { q: string | null; tab: "time" | "relevance" };
+  categories: PublicCategoryView[];
   items: FeedItemSummary[];
   page: number;
   pageCount: number;

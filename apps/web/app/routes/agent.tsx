@@ -3,8 +3,9 @@ import { IntentLink } from "../components/ui/IntentLink";
 import { useLoaderData, useNavigate, useSearchParams } from "react-router";
 import type { Route } from "./+types/agent";
 import { PUBLIC_INTERFACE_VERSION } from "@aihot/contracts/http-policy";
+import type { PublicCategoryView } from "@aihot/contracts/taxonomy";
 import { SITE } from "@aihot/site";
-import { apiGet, cachedPage } from "../lib/api.server";
+import { apiGet, cachedPage, loadOr404 } from "../lib/api.server";
 import { pageReuse } from "../lib/page-reuse";
 import { listPath, pageMeta, siteUrl } from "../lib/seo";
 import { IconArrowUpRight, IconChevronRight, IconCode, IconPlug, IconRss } from "../components/icons";
@@ -58,9 +59,13 @@ const useTag = TAG?.useValue ?? (() => null);
 
 export async function loader({ request }: Route.LoaderArgs) {
   // Only whether the api answers, within three seconds.
-  const healthy = await apiGet("/api/health", { signal: AbortSignal.any([request.signal, AbortSignal.timeout(3000)]) }).then(() => true, () => false);
+  const [healthy, categoryResult] = await Promise.all([
+    apiGet("/api/health", { signal: AbortSignal.any([request.signal, AbortSignal.timeout(3000)]) }).then(() => true, () => false),
+    loadOr404<{ categories: PublicCategoryView[] }>("/api/site/categories", { signal: request.signal }),
+  ]);
   return cachedPage(300, {
     healthy,
+    categories: categoryResult.categories,
     // The examples show the configured public address, the same on the server and in the browser; what
     // depends on the time reads the server's.
     base: siteUrl(),
@@ -87,7 +92,7 @@ export function meta({ location }: Route.MetaArgs) {
 }
 
 export default function AgentPage() {
-  const { healthy, base, now } = useLoaderData<typeof loader>();
+  const { healthy, base, now, categories } = useLoaderData<typeof loader>();
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const tag = useTag();
@@ -187,7 +192,7 @@ export default function AgentPage() {
         </div>
       </header>
 
-      {BANNERS.map((Banner, i) => <Banner key={i} base={base} tag={tag} now={now} href={anchorHref} open={open} />)}
+      {BANNERS.map((Banner, i) => <Banner key={i} base={base} tag={tag} now={now} categories={categories} href={anchorHref} open={open} />)}
 
       <div role="tablist" aria-label="接入方式" className="mt-8 grid grid-cols-2 gap-2.5 sm:gap-3 2xl:grid-cols-4">
         {TRACKS.map((t) => {
@@ -222,8 +227,8 @@ export default function AgentPage() {
       {TAG && <TAG.Note />}
 
       <section id="agent-panel" role="tabpanel" aria-labelledby={`agent-tab-${tab}`} className="mt-9">
-        {track && <track.Panel key={track.key} base={base} tag={tag} now={now} />}
-        {BLOCKS.filter((b) => b.track === tab).map((b) => <b.Block key={b.anchor} base={base} tag={tag} now={now} />)}
+        {track && <track.Panel key={track.key} base={base} tag={tag} now={now} categories={categories} />}
+        {BLOCKS.filter((b) => b.track === tab).map((b) => <b.Block key={b.anchor} base={base} tag={tag} now={now} categories={categories} />)}
       </section>
     </ReadingLayout>
     </>

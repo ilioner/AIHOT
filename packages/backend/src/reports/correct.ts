@@ -1,19 +1,24 @@
 // A classification correction moves the same frozen entry; it never composes another issue or pays
 // a writer. The override, publication, report revisions and audit commit in the caller's transaction.
+import { DEFAULT_CATEGORIES } from "@aihot/contracts/taxonomy";
 import { RELEASE } from "@aihot/industry/taxonomy";
 import type { Tx } from "../db.ts";
 import { isRelease } from "../editorial/vocabulary.ts";
 import { emit } from "../modules.ts";
-import { SECTION_ORDER, sectionOf } from "./edition.ts";
+import { loadCategories } from "../taxonomy.ts";
+import { reportSections } from "./edition.ts";
 
 interface Entry { itemId: string; followUp?: string; firstParty?: boolean; role?: string; [key: string]: unknown }
 interface Group { label?: string; heading?: string; summary?: unknown; items?: Entry[]; storyRefs?: Entry[]; [key: string]: unknown }
-interface Content { sections?: Group[]; themes?: Group[]; metrics?: Record<string, number>; [key: string]: unknown }
+interface Content { sections?: Group[]; themes?: Group[]; sectionOrder?: string[]; metrics?: Record<string, number>; [key: string]: unknown }
 
 /** Moves the item to its new section in every issue that carries it; says whether any issue changed. */
 export async function correctReportClassification(tx: Tx, articleId: string, reason: string): Promise<boolean> {
   const [item] = await tx<{ category: string | null }[]>`SELECT category FROM publications WHERE article_id=${articleId}`;
   if (!item?.category) return false;
+  const categories = await loadCategories(tx);
+  const { order, sectionOf } = reportSections(categories);
+  const defaultOrder = reportSections(DEFAULT_CATEGORIES).order;
   const reports = await tx<{ id: number; kind: string; content: Content; revision: number; generated_at: Date }[]>`
     SELECT id,kind,content,revision,generated_at FROM reports
     WHERE content @> ${tx.json({ sections: [{ items: [{ itemId: articleId }] }] })}
@@ -27,8 +32,10 @@ export async function correctReportClassification(tx: Tx, articleId: string, rea
     const labelKey = daily ? "label" : "heading";
     const entriesKey = daily ? "items" : "storyRefs";
     const from = groups.find(g => g[entriesKey]?.some(e => e.itemId === articleId));
+    // Frozen section names remain recognisable after a rename; legacy pack sections predate sectionOrder.
     // Older, hand-written theme headings are not taxonomy columns; do not reinterpret their prose.
-    if (!from || !SECTION_ORDER.includes(from[labelKey] ?? "")) continue;
+    const knownSections = new Set([...(content.sectionOrder ?? []), ...defaultOrder, ...order]);
+    if (!from || !knownSections.has(from[labelKey] ?? "")) continue;
     const label = sectionOf(item.category);
     if (from[labelKey] !== label) {
       const moving = from[entriesKey]!.filter(e => e.itemId === articleId);
@@ -38,7 +45,9 @@ export async function correctReportClassification(tx: Tx, articleId: string, rea
       target[entriesKey]!.push(...moving);
       if (!daily) { from.summary = null; target.summary = null; }
     }
-    const arranged = groups.filter(g => g[entriesKey]?.length).sort((a, b) => SECTION_ORDER.indexOf(a[labelKey]!) - SECTION_ORDER.indexOf(b[labelKey]!));
+    const rank = (g: Group) => { const at = order.indexOf(g[labelKey]!); return at < 0 ? order.length : at; };
+    const arranged = groups.filter(g => g[entriesKey]?.length).sort((a, b) => rank(a) - rank(b));
+    if (from[labelKey] !== label) content.sectionOrder = [...new Set([...(content.sectionOrder ?? defaultOrder), ...order])];
     if (daily) {
       content.sections = arranged;
       // The release figure (dailyMetrics) follows the new classification; without a RELEASE kind there is none.

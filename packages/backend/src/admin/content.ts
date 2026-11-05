@@ -5,7 +5,8 @@
 import { z } from "zod";
 import { correctReportClassification } from "../reports/correct.ts";
 import type { AdminContentChain, AdminContentRow, AdminPublication, AdminPresentationRefresh, AdminRerun, BeforeJson } from "@aihot/contracts/admin";
-import { ARTICLE_ID_PATTERN, CATEGORY_KEYS } from "@aihot/contracts/taxonomy";
+import { ARTICLE_ID_PATTERN } from "@aihot/contracts/taxonomy";
+import { loadCategories } from "../taxonomy.ts";
 import { sql, type Db, type Tx } from "../db.ts";
 import { enqueue, QUEUES } from "../jobs/queue.ts";
 import { needsGrouping, queueProcessing } from "../jobs/content.ts";
@@ -221,7 +222,7 @@ export async function contentChain(id: string): Promise<Chain | null> {
     sql<Chain["deliveries"]>`SELECT target_key, dedupe_key, status, attempts, response, created_at, sent_at FROM deliveries WHERE subject_id = ${id} ORDER BY created_at DESC`,
     auditHistory(`content:${id}`),
   ]);
-  return { article, discoveries, revisions, analyses, publication: publication[0] ?? null, override: override[0] ?? null, ledger, membership, decisions, deliveries, history };
+  return { categories: await loadCategories(), article, discoveries, revisions, analyses, publication: publication[0] ?? null, override: override[0] ?? null, ledger, membership, decisions, deliveries, history };
 }
 
 /** Whether the current hot ranking shows the article: as an event's representative or among its reports. */
@@ -290,7 +291,7 @@ const FieldsSchema = z
     title: z.string().min(1).max(300),
     summary: z.string().max(2000),
     reason: z.string().max(1000),
-    category: z.enum(CATEGORY_KEYS as unknown as [string, ...string[]]),
+    category: z.string().min(1),
     tags: z.array(z.string().max(60)).max(20),
     score: z.number().min(0).max(100).nullable(),
     selected: z.boolean(),
@@ -304,6 +305,7 @@ export async function overrideFields(id: string, input: { fields: unknown; clear
   z.object({ reason: z.string().trim().min(1), version: z.number().int().nonnegative(), clear: z.array(z.string()).optional() }).parse(input);
   const fields = FieldsSchema.parse(input.fields ?? {});
   const published = await sql.begin(async (tx) => {
+    if (fields.category && !(await loadCategories(tx)).some(c => c.key === fields.category)) throw new Error("invalid category");
     const before = await overrideRow(id, tx);
     if (before.version !== input.version) throw new Conflict(STALE);
     const next: Record<string, unknown> = { ...before.fields, ...fields };

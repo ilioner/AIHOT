@@ -1,7 +1,9 @@
 // Public API v1 (long-term). Field shapes follow the OpenAPI document at /openapi-v1.json (the paths stay
 // /api/v1); each operation's query parameters and Cache-Control are listed in V1_OPERATIONS.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { PUBLIC_API_CATEGORY_KEYS, type PublicApiCategoryKey } from "@aihot/contracts/taxonomy";
+import type { PublicApiCategoryKey } from "@aihot/contracts/taxonomy";
+import { loadCategories } from "@aihot/backend/publication/categories";
+import { publicApiCategoryKeys } from "@aihot/contracts/taxonomy";
 import { config } from "@aihot/backend/config";
 import { InvalidCursorError } from "@aihot/backend/lib/cursor";
 import { SearchBusyError } from "@aihot/backend/publication/pool";
@@ -49,6 +51,15 @@ export function enumParam<T extends string>(value: string | undefined, name: str
   return value as T;
 }
 
+export function categoryParam(value: string | undefined, categories: Awaited<ReturnType<typeof loadCategories>>): PublicApiCategoryKey | null {
+  if (value === undefined) return null;
+  const keys = publicApiCategoryKeys(categories) as readonly PublicApiCategoryKey[];
+  if (!keys.includes(value as PublicApiCategoryKey)) {
+    throw new QueryError(keys.length ? `category must be one of: ${keys.join(", ")}.` : "category is not available.");
+  }
+  return value as PublicApiCategoryKey;
+}
+
 type SendOptions = Parameters<typeof sendJsonWithEtag>[3];
 
 /** Every v1 JSON answer: with a weak ETag, 304 when it matches, and a module's reminder for the person behind the request on top. */
@@ -89,7 +100,7 @@ export function registerV1(app: FastifyInstance) {
     const mode = enumParam(q.mode, "mode", ["selected", "all"] as const, "selected");
     const window = enumParam(q.window, "window", ["24h", "7d"] as const, "7d");
     const by = enumParam(q.by, "by", ["timeline", "published"] as const, "timeline");
-    const category = q.category === undefined ? null : enumParam<PublicApiCategoryKey>(q.category, "category", PUBLIC_API_CATEGORY_KEYS, PUBLIC_API_CATEGORY_KEYS[0]);
+    const category = categoryParam(q.category, await loadCategories());
     let search: string | null = null;
     if (q.q !== undefined) {
       search = q.q.trim();
