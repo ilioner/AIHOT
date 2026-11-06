@@ -48,7 +48,7 @@ test("API startup is quiet and an unexpected error retains the request, stack an
       const busy = await app.inject({ url: url + "?q=private-query" });
       assert.equal(busy.statusCode, 503);
       assert.equal(busy.headers["retry-after"], "5");
-      assert.equal(busy.json().code, "temporarily_unavailable");
+      assert.equal(busy.json().code, url === "/api/busy-site" ? "search_busy" : "temporarily_unavailable");
       assert.equal(busy.json().reason, undefined);
     }
     const mcp = await app.inject({ method: "POST", url: "/api/mcp?aihot_actor=private-actor", headers: {

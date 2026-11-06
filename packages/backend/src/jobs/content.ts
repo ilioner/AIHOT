@@ -99,11 +99,11 @@ export function needsGrouping(m: { participationMode: string; historical: boolea
 }
 
 /**
- * Records a heat-only post. An isolated post left on this queue is routed back to analysis.
+ * Records a heat-only post. An editorial post left on this queue is routed back to analysis.
  */
 export async function settleNonEditorial(articleId: string): Promise<{ group: boolean }> {
   const [source] = await sql`SELECT s.participation_mode FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
-  if (source?.participation_mode === "isolated") {
+  if (source?.participation_mode === "editorial") {
     await queueProcessing(articleId);
     return { group: false };
   }

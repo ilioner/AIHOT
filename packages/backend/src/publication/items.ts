@@ -38,7 +38,7 @@ export interface ItemRow {
   source_icon_url?: string | null;
   source_metadata?: unknown;
   media?: Array<Record<string, any>>;
-  /** Participation mode of the source now (editorial, hot_signal, isolated). */
+  /** Participation mode of the source now (editorial, hot_signal). */
   source_mode: string;
   x_post: Record<string, any> | null;
   /** Current source icon only when that account is this post's author. */

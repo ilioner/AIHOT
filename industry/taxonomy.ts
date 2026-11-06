@@ -13,12 +13,12 @@
  */
 export const CATEGORIES = [
   { key: "policy", tagColor: "indigo", label: "政策", feedLabel: "职教政策", section: "政策文件", guide: "教育信息化、AI＋教育／职教的教学改革指导、使用约束、标准与规范：发布、解读、征求意见、生效与实施要求。按实际适用对象和规定事项归类，保留文件阶段；一般行政通知不因发布机构级别高而属于本站政策范围。" },
-  { key: "ai-teaching", tagColor: "turquoise", label: "AI 赋能教学", feedLabel: "AI 赋能教学", section: "AI 赋能教学", guide: "与教师任务直接相关的 AI 工具、平台或模型能力发布，以及课堂、实训、备课与评价中的实际应用。通用能力无需已有职业院校部署，但不能把可能教学用途写成已落地；核心是既有工具的方法与演示时归教程，核心是技术影响的论证时归观点。" },
+  { key: "ai-teaching", tagColor: "turquoise", label: "AI 赋能教学", feedLabel: "AI 赋能教学", section: "AI 赋能教学", guide: "原文提供与教师任务直接相关的 AI 工具、平台或模型能力发布，以及课堂、实训、备课与评价中的实际应用。无需已有职业院校部署，但不能把可能教学用途写成已落地；无教学关联的通用 AI 实践、演示、玩法与工作流归教程，不能为了贴合读者补出教学标签。核心是技术影响的论证时归观点。" },
   { key: "ai-tools", tagColor: "blue", label: "AI 工具", section: "AI 工具与资源", guide: "AI 工具目录、资源导航与专题推荐，介绍已经可用的工具用途、能力或使用条件，覆盖教学、学习、办公、创作与求职辅助。收录或首次发现不代表产品新发布；不能编造上新日期或院校应用。以步骤示例为主归教程，有明确新能力发布或课堂应用证据时归 AI 赋能教学，行业经营新闻不归工具。" },
   { key: "industry", tagColor: "orange", label: "行业", feedLabel: "行业动态", section: "行业动态", guide: "与 AI 教学或教育信息化有关、已经发生的服务开放、交付、合作实施或运行变化。签约揭牌、融资人事和机构表态本身不是教学内容；材料以具体教程、研究或政策要求为核心时归对应类别。新闻由当事人发帖、带有态度，也不因此变成观点。" },
   { key: "skills", tagColor: "violet", label: "技能与竞赛", feedLabel: "技能与竞赛", section: "技能与竞赛", guide: "与 AI 教学、教师应用能力或智能实训有关的竞赛、能力认定安排、结果与规则变化。名次和颁奖不等于可复用方法；核心在讲解参赛教案、提示词、工作流或评价方法时归教程。" },
   { key: "research", tagColor: "green", label: "研究", feedLabel: "研究与报告", section: "研究与报告", guide: "以研究设计、实验、评估数据与发现为核心的 AI 教学、学习评价、教师工作、技术能力或风险研究。区分技术测评与教学效果证据；政策要求解读归政策，以操作流程为主的实测归教程，不能只因出现数字就归研究。" },
-  { key: "tip", tagColor: "amber", label: "教程", section: "技巧与观点", guide: "可复用的 AI 工具、提示词、备课、教案与课件制作、课堂实训、作业与评价方法，包括操作示例、失败复盘和使用限制。通用工具或其他学段的方法无需职业院校背书；培训有具体资源就按资源归类，不按活动外壳。新能力发布归 AI 赋能教学，论证影响而无操作方法归观点。", commentary: true },
+  { key: "tip", tagColor: "amber", label: "教程", section: "技巧与观点", guide: "AI 教学方法及通用 AI 实践、演示与玩法：图像、音视频、动画、SVG、网页、游戏、3D 创作，提示词、智能体／Skills／MCP 与自动化工作流，AI 编程、数据分析、硬件与多模态应用，工具实测、对比、失败复盘、模型部署、API 接入与推理优化。能辨认 AI、任务及具体方法、结果、演示或经验即可，无需教师任务关联、新发布、成功完成、源码或完整复现步骤；只有任务与结果时如实称演示或案例，不冒充完整教程。官方展示不等于独立验证。工具目录归 AI 工具；有明确教学关联的新能力发布归 AI 赋能教学，以研究证据为主归研究，以影响论证为主归观点。", commentary: true },
   { key: "opinion", tagColor: "purple", label: "观点", section: "技巧与观点", guide: "围绕 AI 教学、教育信息化、相关政策或技术影响，有事实与推理支持的解释、判断、复盘、预测或访谈观点。可能的教学迁移不得写成已验证效果；以文件要求和适用范围为核心的解读归政策，作者是名人不自动归观点。", commentary: true },
 ] as const satisfies ReadonlyArray<{ key: string; tagColor: string; label: string; feedLabel?: string; section: string; guide: string; commentary?: true }>;
 

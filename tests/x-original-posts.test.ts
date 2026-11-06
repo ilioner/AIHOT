@@ -17,7 +17,7 @@ const requests: string[] = [];
 const provider = await stub((_hit, req) => {
   const step = analysisStep(req.body);
   requests.push(step);
-  const content = step === "prefilter" ? { label: "UNKNOWN", reason: "No standalone text evidence" }
+  const content = step === "prefilter" ? { label: "PASS", reason: "Relevant original post" }
     : step === "score" ? { attentionScore: req.body.includes("high-score") ? SELECTING_SCORE : 12 }
     : step === "structure" ? { category: "ai-teaching", tags: ["AI赋能教学"], subjects: [], scope: "single", fact: null }
     : step === "understand" ? { itemType: "ai_in_teaching", authorRole: "principal", tags: [], editorialJudgment: "AI 实训工具更新", titleZh: "实际正文标题", summaryZh: "这是实际正文的中文摘要。" }
@@ -73,6 +73,8 @@ test("rebuilding an image-only post replaces historical model replies across pub
   const { id, url } = await post("historical-empty", "");
   await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,title_zh,summary_zh,score,selected)
     VALUES (${id},1,'model','pass','请补充正文','抱歉，没有推文文字内容可供翻译。',${SELECTING_SCORE},true)`;
+  await sql`UPDATE articles SET processing_state='analyzed' WHERE id=${id}`;
+  await sql`UPDATE analyses SET output='{"prefilter":{"label":"PASS"},"writer":"summarize"}'::jsonb WHERE article_id=${id}`;
   await sql`INSERT INTO translations (article_id,revision,body_text,body_html,complete,origin)
     VALUES (${id},1,'错误译文','<p>错误译文</p>',true,'model')`;
   const before = provider.hits();

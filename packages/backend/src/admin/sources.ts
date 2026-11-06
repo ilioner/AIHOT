@@ -121,7 +121,7 @@ const EDITABLE = z
     enabled: z.boolean(),
     interval_minutes: z.number().int().min(1).max(1440),
     tier: z.enum(["T1", "T1_5", "T2", "EXCLUDE_MP"]),
-    participation_mode: z.enum(["editorial", "hot_signal", "isolated"]),
+    participation_mode: z.enum(["editorial", "hot_signal"]),
     signal_group_id: z.string().max(120).nullable(),
     first_party: z.boolean(),
     owner_entity_id: z.string().max(120).nullable(),
@@ -193,7 +193,7 @@ export async function updateSource(id: string, input: { patch: unknown; version:
       { ...Object.fromEntries(keys.map((k) => [k, before[k]])), ...(kindChanged ? { cursor: before.cursor } : {}) },
       { ...patch, ...(kindChanged ? { cursor } : {}) }, { db: tx });
     // What public exits show for this source's articles is derived from these fields: re-derive them
-    // all (in the worker) so a revoked licence or an isolated source stops on every exit.
+    // all (in the worker) so a revoked licence or a changed source role reaches every exit.
     const publisherChanged = patch.config && ["publisherRole", "publisherUrlPrefixes", "publisherRequiresDiscovery"].some(k => JSON.stringify((before.config as Record<string, unknown>)[k]) !== JSON.stringify(patch.config![k]));
     if (publisherChanged || keys.some((k) => PUBLICATION_FIELDS.includes(k) && JSON.stringify(before[k]) !== JSON.stringify(patch[k]))) {
       await requestRepublish(tx, id, actor);
@@ -222,7 +222,7 @@ const CreateSchema = z
     kind: z.enum(["rss", "web_list", "json_list", "web_search", "x_search", "mp_account", "external"]),
     config: z.record(z.string(), z.unknown()),
     tier: z.enum(["T1", "T1_5", "T2", "EXCLUDE_MP"]).default("T2"),
-    participation_mode: z.enum(["editorial", "hot_signal", "isolated"]).default("editorial"),
+    participation_mode: z.enum(["editorial", "hot_signal"]).default("editorial"),
     interval_minutes: z.number().int().min(1).max(1440).default(30),
     first_party: z.boolean().default(false),
     tags: z.array(z.string()).default([]),

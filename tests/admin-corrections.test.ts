@@ -39,18 +39,18 @@ test("admin status distinguishes waiting, failures, rule blocks and manual withd
   assert.equal((await searchContent(id))[0]!.status_reason, "人工下架");
 });
 
-test("non-block content remains public without a summary or source publication date", async () => {
+test("only analyzed passing content is public, even without a summary or source publication date", async () => {
   const id = await article();
   await sql`UPDATE articles SET processing_state='analyzed',body_status='unconfirmed' WHERE id=${id}`;
   await publishArticle(id);
-  assert.equal((await contentChain(id))!.article.status_reason, "公开");
-  await sql`UPDATE articles SET body_status='ok' WHERE id=${id}`;
-  assert.equal((await searchContent(id))[0]!.status_reason, "公开");
+  assert.equal((await contentChain(id))!.publication!.visibility, "withdrawn");
   await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,summary_zh,selected)
     VALUES (${id},1,'rule','pass',NULL,false)`;
   await sql`UPDATE articles SET published_at=NULL,backfill=true WHERE id=${id}`;
   await publishArticle(id);
   assert.equal((await contentChain(id))!.article.status_reason, "公开");
+  await sql`UPDATE articles SET body_status='ok' WHERE id=${id}`;
+  assert.equal((await searchContent(id))[0]!.status_reason, "公开");
 });
 
 test("concurrent source intake creates one source for the same feed", async () => {
@@ -97,6 +97,7 @@ test("a source transaction rolled back at commit leaves no successful audit entr
 
 test("content corrections, public projection and audit either commit together or remain retryable", async () => {
   const id = await article();
+  await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,selected) VALUES (${id},1,'rule','pass',false)`;
   await publishArticle(id);
   await sql.unsafe(`CREATE FUNCTION refuse_admin_audit() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN IF NEW.actor = 'test-refuse-audit' THEN RAISE EXCEPTION 'audit unavailable'; END IF; RETURN NEW; END $$`);

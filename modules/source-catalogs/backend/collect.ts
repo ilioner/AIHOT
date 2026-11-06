@@ -34,7 +34,6 @@ export async function collectCatalog(sourceId: string, reader: Reader = guardedF
   const [source] = await sql<{ enabled: boolean; participation_mode: string }[]>`SELECT enabled, participation_mode FROM sources WHERE id = ${sourceId} AND kind = 'external'`;
   if (!source) return { sourceId, status: "missing" };
   if (!source.enabled) return { sourceId, status: "paused" };
-  if (sourceId === "catalog-aihot-tip" && source.participation_mode !== "isolated") throw new Error("此教程来源尚未确认再分发授权，必须保持 isolated");
   const [run] = await sql<{ id: number }[]>`INSERT INTO fetch_runs (source_id, detail) VALUES (${sourceId}, ${sql.json({ via: "source-catalogs" })}) RETURNING id`;
   let created = 0;
   let revised = 0;

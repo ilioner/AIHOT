@@ -20,6 +20,9 @@ import { foldableSelectionCondition, latestCompositeCondition, ownFactEvidenceCo
 
 interface ArticleRow {
   id: string;
+  revision: number;
+  processing_state: string;
+  processing_error: string | null;
   source_id: string;
   url: string;
   title: string;
@@ -39,6 +42,9 @@ interface ArticleRow {
 
 interface AnalysisRow {
   id: number;
+  origin: string;
+  input_revision: number;
+  output: { prefilter?: { label?: string } | null; writer?: string };
   relevance: string | null;
   category: string | null;
   tags: string[];
@@ -237,7 +243,7 @@ export async function publishArticle(articleId: string, options: PublishOptions 
 
 export async function publishArticleTx(tx: Tx, articleId: string, options: PublishOptions = {}): Promise<PublishResult | null> {
   const [article] = await tx<ArticleRow[]>`
-    SELECT id, source_id, url, title, language, published_at, discovered_at, timeline_at, backfill, body_status,
+    SELECT id, revision, processing_state, processing_error, source_id, url, title, language, published_at, discovered_at, timeline_at, backfill, body_status,
            body_text, x_post, x_article, grouped_at, grouping_status, selection_adds_value
     FROM articles WHERE id = ${articleId} FOR UPDATE`;
   if (!article) return null;
@@ -250,7 +256,7 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
     SELECT id, name, kind, tier, participation_mode, first_party, site_fulltext, syndicate_fulltext FROM sources WHERE id = ${article.source_id}`;
   if (!source) return null;
   const [analysis] = await tx<AnalysisRow[]>`
-    SELECT id, relevance, category, tags, subjects, title_zh, summary_zh, notes_zh, reason_zh, score, selected
+    SELECT id, origin, input_revision, output, relevance, category, tags, subjects, title_zh, summary_zh, notes_zh, reason_zh, score, selected
     FROM analyses WHERE article_id = ${articleId} ORDER BY input_revision DESC, id DESC LIMIT 1`;
   const [override] = await tx<OverrideRow[]>`SELECT fields, visibility FROM editorial_overrides WHERE article_id = ${articleId}`;
   const [membership] = await tx<{ fact_id: number; story_id: number | null }[]>`
@@ -280,13 +286,14 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
   const score = f.score === null || typeof f.score === "number" ? f.score : analysis?.score ?? null;
   const relevance = hasBlockedTag(tags) ? "block" : typeof f.relevance === "string" ? (f.relevance as string) : analysis?.relevance ?? null;
   const judgedSelected = typeof f.selected === "boolean" ? (f.selected as boolean) : analysis?.selected ?? null;
-  // Isolated material and an effective BLOCK judgement reach no public surface, including detail
-  // pages. Changing visibility alone cannot turn an out-of-scope judgement into a relevant one.
-  const visibility = source.participation_mode === "isolated" || relevance === "block" ? "withdrawn" : (override?.visibility ?? "public");
-
-  // `eligible` means listable, not necessarily selected: unknown judgements and undated
-  // material remain visible until an explicit BLOCK/withdrawal decision is made.
-  const eligible = isPoolEligible({ participationMode: source.participation_mode, relevance, title });
+  const prefilterLabel = analysis?.output?.prefilter?.label;
+  const passed = analysis?.input_revision === article.revision && analysis.relevance === "pass"
+    && article.processing_state !== "failed" && !article.processing_error
+    && (analysis.origin !== "model" || (article.processing_state === "analyzed" && prefilterLabel === "PASS" && !!analysis.output?.writer))
+    && (!prefilterLabel || prefilterLabel === "PASS") && analysis.output?.writer !== "none";
+  const visibility = source.participation_mode === "editorial" && (!passed || relevance !== "pass")
+    ? "withdrawn" : (override?.visibility ?? "public");
+  const eligible = passed && isPoolEligible({ participationMode: source.participation_mode, relevance, title });
   const selectionCandidate = isSelectable(eligible && (!!summary || !!original)
     && (!article.backfill || article.published_at !== null || !!options.releasedAt), judgedSelected, source.tier);
   // Scoring nominates a report; a completed identity/value decision admits it to selection.

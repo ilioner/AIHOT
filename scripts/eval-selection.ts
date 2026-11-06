@@ -106,7 +106,7 @@ for (const model of models) {
     if (awaitsMaterial(input)) return outcome("unknown");
     try {
       const prefilter = await runSelectionPrefilter(input, {}, (id) => receiptIds.push(id));
-      if (prefilter.label === "BLOCK") return outcome("block");
+  if (prefilter.label !== "PASS") return outcome("block");
       const threshold = tierThreshold(input.source.tier);
       if (threshold === null) return outcome("pass");
 

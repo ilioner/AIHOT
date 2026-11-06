@@ -30,7 +30,7 @@ after(async () => {
 async function fixture(options: {
   full?: boolean; syndicate?: boolean; kind?: "x_search" | "rss"; summary?: boolean;
   shape?: "missing" | "quote-only"; bodyStatus?: "ok" | "unconfirmed" | "none";
-  translation?: "missing" | "stale" | "same"; mode?: "editorial" | "hot_signal" | "isolated";
+  translation?: "missing" | "stale" | "same"; mode?: "editorial" | "hot_signal";
 } = {}) {
   n += 1;
   const key = `${T}-${n}`;
@@ -279,7 +279,7 @@ test("R10: summary-only and withdrawn visibility retain stricter detail and expo
     await get(path, 404, path.endsWith("/markdown") ? /text\/plain/ : /application\/problem\+json/);
   }
 });
-for (const mode of ["hot_signal", "isolated"] as const) {
+for (const mode of ["hot_signal"] as const) {
   test(`R10: ${mode} sources keep detail and Markdown unavailable`, async () => {
     const f = await fixture({ full: true, mode });
     for (const path of [`/api/site/items/${f.id}`, `/api/site/items/${f.id}/original`, `/items/${f.id}/markdown`]) {

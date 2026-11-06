@@ -1,6 +1,6 @@
 // External collection reports (POST /api/ingest/items). Same identity rules and timeline
 // rule as every other entrance: old or future-dated items and explicit backfill never count as
-// today's news and are never pushed. Unknown sources are created isolated, awaiting an operator.
+// today's news and are never pushed. New sources enter editorial review before publication.
 import { sql } from "../db.ts";
 import { upsertMaterial } from "../content/materials.ts";
 import { queueProcessing } from "../jobs/content.ts";
@@ -34,7 +34,7 @@ export async function ingestItems(body: { sourceId?: unknown; sourceName?: unkno
   const [source] = await sql<{ id: string; participation_mode: string; enabled: boolean }[]>`
     INSERT INTO sources (id, name, kind, config, tier, participation_mode, interval_minutes, enabled, health, tags)
     VALUES (${sourceId.slice(0, 120)}, ${typeof body.sourceName === "string" && body.sourceName.trim() ? body.sourceName.trim().slice(0, 200) : sourceId.slice(0, 120)},
-            'external', '{}'::jsonb, 'T2', 'isolated', 1440, true, 'ok', ${["ingest:auto-created"]})
+            'external', '{}'::jsonb, 'T2', 'editorial', 1440, true, 'ok', ${["ingest:auto-created"]})
     ON CONFLICT (id) DO UPDATE SET last_ok_at = now() WHERE sources.enabled
     RETURNING id, participation_mode, enabled`;
   if (!source) throw new IngestError(409, "source paused");

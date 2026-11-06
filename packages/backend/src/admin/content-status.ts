@@ -2,7 +2,6 @@ import { sql } from "../db.ts";
 
 export function contentStatus() {
   return sql`CASE
-    WHEN s.participation_mode = 'isolated' THEN '仅内部参考'
     WHEN p.visibility = 'withdrawn' AND EXISTS (SELECT 1 FROM editorial_overrides status_override WHERE status_override.article_id = a.id AND status_override.visibility = 'withdrawn') THEN '人工下架'
     WHEN a.processing_state = 'failed' THEN '分析失败'
     WHEN a.processing_state = 'new' THEN '待分析'

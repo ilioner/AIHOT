@@ -15,7 +15,7 @@ const teacher = { code: 0, data: { id: 44, name: "教师的AI辅助", sites: [
 const response = (data: unknown, status = 200) => async () => ({ status, url: "https://fixture.example", headers: new Headers(), body: Buffer.from(JSON.stringify(data)), truncated: false, text: () => JSON.stringify(data) });
 
 before(async () => {
-  for (const id of SOURCE_IDS) await sql`INSERT INTO sources (id, name, kind, participation_mode, interval_minutes) VALUES (${id}, ${id}, 'external', ${id === "catalog-aihot-tip" ? "isolated" : "editorial"}, 1440) ON CONFLICT DO NOTHING`;
+  for (const id of SOURCE_IDS) await sql`INSERT INTO sources (id, name, kind, participation_mode, interval_minutes) VALUES (${id}, ${id}, 'external', 'editorial', 1440) ON CONFLICT DO NOTHING`;
 });
 after(async () => { installModules([]); await stopBoss(); await closeDb(); });
 
@@ -99,7 +99,7 @@ test("failures remain visible and defer the next scheduled request", async () =>
   assert.throws(() => parseCatalog("catalog-uisdc", JSON.stringify({ data: [{ id: 1, time: 1e20, dubao: [{ title: "日期损坏" }] }] })), /日期无效/);
 });
 
-test("paused sources, collection valve and unauthorized tutorial publication stay closed", async () => {
+test("paused sources and collection valve stay closed; tutorials enter editorial review", async () => {
   await sql`UPDATE sources SET enabled = false WHERE id = 'catalog-aibase'`;
   const neverRead = async (): Promise<never> => { throw new Error("must not fetch"); };
   assert.equal((await collectCatalog("catalog-aibase", neverRead)).status, "paused");
@@ -114,8 +114,13 @@ test("paused sources, collection valve and unauthorized tutorial publication sta
     if (previous === undefined) delete process.env.COLLECT_ENABLED;
     else process.env.COLLECT_ENABLED = previous;
   }
-  await sql`UPDATE sources SET participation_mode = 'editorial' WHERE id = 'catalog-aihot-tip'`;
-  await assert.rejects(() => collectCatalog("catalog-aihot-tip", neverRead), /isolated/);
+  const tutorial = await collectCatalog("catalog-aihot-tip", response({ items: [
+    { id: "review-tutorial", category: "tip", title: "教学教程", summary: "教学应用方法", links: { aihot: "https://aihot.news/items/review-tutorial", original: "https://original.example/tutorial" } },
+  ] }));
+  assert.equal(tutorial.created, 1);
+  const [pending] = await sql`SELECT a.processing_state,p.visibility FROM articles a LEFT JOIN publications p ON p.article_id=a.id WHERE a.source_id='catalog-aihot-tip'`;
+  assert.equal(pending!.processing_state, "new");
+  assert.notEqual(pending!.visibility, "public");
   installModules([module]);
   assert.deepEqual(await fetchNow("catalog-aibase", "test-admin"), { jobId: null });
   assert.equal((await collectCatalog("unrelated-external-source", neverRead)).status, "unmanaged");

@@ -82,5 +82,5 @@ test("ingest skips malformed entries and still accepts and deduplicates the vali
   const articles = await sql<{ title: string; url: string }[]>`SELECT title, url FROM articles WHERE source_id = ${sourceId}`;
   assert.deepEqual(articles.map((row) => ({ ...row })), [{ title: "valid", url }]);
   const [source] = await sql<{ participation_mode: string }[]>`SELECT participation_mode FROM sources WHERE id = ${sourceId}`;
-  assert.equal(source!.participation_mode, "isolated");
+  assert.equal(source!.participation_mode, "editorial");
 });

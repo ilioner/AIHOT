@@ -74,8 +74,8 @@ function readingBody(
 
 /**
  * Public detail (rules.hasItemPage) in one language, Chinese unless the original is asked for: items the
- * lists leave out (low relevance, merged duplicates, no Chinese summary yet) keep a noindex page;
- * withdrawn and hot_signal items are a 404.
+ * lists leave out (merged duplicates or no Chinese summary yet) keep a noindex page;
+ * failed or unpassed analyses, withdrawn and hot_signal items are a 404.
  */
 export async function loadItemDetail(id: string, language: "zh" | "original" = "zh", now = new Date()): Promise<DetailResult> {
   const row = await loadRow(id);

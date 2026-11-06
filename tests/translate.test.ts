@@ -200,9 +200,7 @@ test("a text corrected while its translation was running is translated again, an
 
   const [attempt] = await sql<{ revision: number; outcome: string }[]>`SELECT revision, outcome FROM translation_attempts WHERE article_id = ${id}`;
   assert.deepEqual({ ...attempt }, { revision: 1, outcome: "translated" }, "the attempt is booked on the revision translated");
-  const stale = await detail(id);
-  assert.equal(stale.body.zh, null, "a translation of the old wording is not shown");
-  assert.ok(stale.body.original?.includes("twenty"));
+  assert.equal((await app.inject({ method: "GET", url: `/api/site/items/${id}` })).statusCode, 404, "revised material waits for a current analysis");
 
   // The corrected material waits for its own analysis and identity decision before another paid
   // translation. Install that completed current-revision fixture, as the processing chain does.
@@ -210,6 +208,9 @@ test("a text corrected while its translation was running is translated again, an
   await sql`UPDATE analyses SET input_revision=2 WHERE article_id=${id}`;
   await sql`UPDATE articles SET processing_state='analyzed',grouping_status='complete',grouped_at=now() WHERE id=${id}`;
   await publishArticle(id);
+  const stale = await detail(id);
+  assert.equal(stale.body.zh, null, "a translation of the old wording is not shown");
+  assert.ok(stale.body.original?.includes("twenty"));
   await translatePending({ limit: 1 });
   const [tr] = await sql<{ revision: number }[]>`SELECT revision FROM translations WHERE article_id = ${id}`;
   assert.equal(tr?.revision, 2, "the corrected text is translated on the next run");

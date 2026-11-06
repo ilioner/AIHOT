@@ -3,8 +3,7 @@ import { describePublicationTime } from "../sources/dates.ts";
 // (industry/prompts/):
 // Without material (only a title) or a displayable original post, the item waits for a new material
 // revision before any step.
-//   1. prefilter: does the material belong to this industry at all (wide recall). Only BLOCK stops an
-//      item; a BLOCK on an original post without text counts as UNKNOWN;
+//   1. prefilter: does the material belong to this industry at all (wide recall). Only PASS continues;
 //   2. score: two independent scores against the source tier's threshold (industry/selection.ts) decide 精选;
 //   3. structure: category, tags, subjects and the current news fact, beside scoring;
 //   4. writing, once the structure is in: the Chinese title, summary and reason by the content
@@ -258,9 +257,7 @@ async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
     maxTokens: 512,
     attemptTag: opts.attemptTag,
   });
-  // A BLOCK without text to back it (an original post that is only media or a link) counts as UNKNOWN (which goes on).
-  const label = res.data.label === "BLOCK" && missingEvidence(a) && !a.sourceMetadata?.documentUrl ? "UNKNOWN" : res.data.label;
-  return { label, reason: res.data.reason, model: res.model, receiptId: res.receiptId, reused: res.reused };
+  return { label: res.data.label, reason: res.data.reason, model: res.model, receiptId: res.receiptId, reused: res.reused };
 }
 
 /** The production prefilter step, exposed separately so SelectBench can preserve partial receipt evidence. */
@@ -503,9 +500,9 @@ export async function runAnalysis(a: AnalyzeInputArticle, opts: StepOpts = {}): 
   if (awaitsMaterial(a)) return { prefilter: null, scores: null, writing: null, structure: null };
   const categories = await loadCategories();
   const prefilter = await runSelectionPrefilter(a, opts);
-  if (prefilter.label === "BLOCK") return { prefilter, scores: null, writing: null, structure: null };
+  if (prefilter.label !== "PASS") return { prefilter, scores: null, writing: null, structure: null };
   if (a.sourceMetadata?.documentUrl && missingEvidence(a)) {
-    const structure = prefilter.label === "PASS" ? await runStructure(a, opts, categories) : null;
+    const structure = await runStructure(a, opts, categories);
     return { prefilter, scores: null, structure, writing: { kind: "document", model: null,
       titleZh: a.title, summaryZh: "", notesZh: "", reasonZh: null, receiptIds: [], reused: true } };
   }
@@ -535,8 +532,8 @@ export function normalizeAnalysis(run: AnalysisRun) {
   const titleZh = collapseWhitespace(run.writing?.titleZh ?? "");
   const summaryZh = (run.writing?.summaryZh ?? "").trim();
   // Original posts can consist entirely of media. Model-written copy still needs a title and summary.
-  const relevance = label === "BLOCK" || hasBlockedTag(run.structure?.tags ?? []) ? "block"
-    : !run.writing || !titleZh || (run.writing.kind === "document" ? label !== "PASS" : !summaryZh && run.writing.kind !== "verbatim") ? "unknown" : "pass";
+  const relevance = label === "BLOCK" || label === "UNKNOWN" || hasBlockedTag(run.structure?.tags ?? []) ? "block"
+    : label !== "PASS" || !run.writing || !titleZh || (!summaryZh && run.writing.kind !== "document" && run.writing.kind !== "verbatim") ? "unknown" : "pass";
   const values = run.scores && !run.scores.refused ? run.scores.values : null;
   const score = shownScore(run.scores);
   const threshold = run.scores?.threshold ?? null;

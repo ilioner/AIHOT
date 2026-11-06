@@ -20,6 +20,8 @@ import { READER_WORDING } from "@aihot/industry/wording";
 import { ITEM_TYPES } from "@aihot/industry/taxonomy";
 import { DEFAULT_CATEGORIES } from "@aihot/contracts/taxonomy";
 import { updateCategories } from "@aihot/backend/admin/settings";
+import { publishArticle } from "@aihot/backend/publication/publish";
+import { exportMarkdown, loadItemDetail } from "@aihot/backend/publication/detail";
 
 const T = tag();
 const SOURCE = `test-analyze-${T}`;
@@ -220,7 +222,7 @@ test("a near-selected item is written like a selected one; below the floor it is
   assert.deepEqual((await row(lowId)).tags, ["政策文件", "专业建设", "腾讯"], "structure tags");
 });
 
-test("the prefilter's BLOCK stops everything; UNKNOWN with material goes on like PASS", async () => {
+test("the prefilter's BLOCK and UNKNOWN stop everything and retain the raw judgement", async () => {
   const off = await analyzeArticle(await article("OFFTOPIC"));
   assert.deepEqual([off!.output!.relevance, off!.output!.selected], ["block", false]);
   assert.deepEqual(calls("OFFTOPIC"), ["prefilter"]);
@@ -232,15 +234,94 @@ test("the prefilter's BLOCK stops everything; UNKNOWN with material goes on like
   const stock = await analyzeArticle(stockId);
   assert.deepEqual([stock!.output!.relevance, stock!.output!.score, stock!.output!.selected], ["block", null, false]);
   assert.deepEqual(calls("STOCK-QUOTE"), ["prefilter"], "a BLOCK on a short feed summary does not proceed to scoring or writing");
-  // An UNKNOWN with material is judged and written like a PASS, up to 精选 (T1 + T1 + 2 ≥ 2 × T1).
   const vagueId = await article("VAGUE");
   const vague = await analyzeArticle(vagueId);
-  assert.deepEqual([vague!.output!.relevance, vague!.output!.selected, vague!.output!.titleZh], ["pass", true, "理解标题 VAGUE"]);
+  assert.deepEqual([vague!.output!.relevance, vague!.output!.selected, vague!.output!.score], ["block", false, null]);
+  assert.deepEqual(calls("VAGUE"), ["prefilter"]);
   assert.equal((await row(vagueId)).output.prefilter.label, "UNKNOWN", "the prefilter's own answer stays on record");
   // Nothing but a title and no page to fetch: it waits for material without a model call.
   const bare = await analyzeArticle(await article("BARE", { bodyText: null, excerpt: null, bodyStatus: "none" }));
   assert.deepEqual([bare!.output!.relevance, bare!.output!.selected, bare!.output!.score], ["unknown", false, null]);
   assert.deepEqual(calls("BARE"), []);
+});
+
+test("general AI practice and demos keep tutorial identity and publish below selection, while UNKNOWN and BLOCK stay private", async () => {
+  const examples = [
+    { title: "官方演示用 AI 生成成语故事监控风格视频", body: "厂商用自家视频模型演示成语故事短片，使用参考图并固定机位分段生成，再叠加时间戳。", role: "principal", label: "PASS", near: true },
+    { title: "创作者用 AI 测试复古动画与角色一致性", body: "创作者用视频模型制作无对白短片，对比复古画风、角色跨镜头一致性和头发运动。这是个人实测结果，没有提供完整提示词。", role: "observer", label: "PASS", near: false },
+    { title: "转述 AI 编程助手制作可玩装修游戏的流程", body: "作者转述厂商演示，AI 编程助手将蓝图重建为 Blender 场景并导入 Unreal，加入第一人称模式和家具材质切换。", role: "relayer", label: "PASS", near: true },
+    { title: "分享智能体与 MCP 文档处理工作流", body: "作者用智能体调用 MCP 读取文档，再用 Skills 生成汇总表。流程记录了输入、工具连接与权限要求。", role: "observer", label: "PASS", near: false },
+    { title: "多模态模型识别摄像头中的猫咪饮水", body: "厂商展示社区项目，设备摄像头把画面传入本地模型检测猫，再用较大模型比对参考照片确认身份。", role: "principal", label: "PASS", near: true },
+    { title: "模型 API 数据分析失败复盘", body: "作者让模型 API 分析表格，模型把空值当成零导致统计错误；作者记录了错误输入、现象与核对方法，没有声称问题已经解决。", role: "observer", label: "PASS", near: true },
+    { title: "GPU 推理服务配置与排错经验", body: "作者部署本地模型推理服务，记录依赖版本、显存条件与服务启动步骤，并演示如何定位模型加载失败。", role: "observer", label: "PASS", near: false },
+    { title: "看看这个 AI 新玩法", body: "作者说这个 AI 新玩法很有意思，让读者看未提供的视频，没有说明具体模型、任务或结果。", role: "observer", label: "UNKNOWN", near: false },
+    { title: "AI 厂商融资与机房扩建宣传", body: "厂商宣布新一轮融资与机房扩建，说要全面赋能行业；未提供 AI 使用任务、流程或具体演示。", role: "principal", label: "BLOCK", near: false },
+  ];
+  const original = { prefilter: process.env.PREFILTER_MODEL, score: process.env.SCORE_MODEL };
+  const seen: Array<{ title: string; step: AnalysisStep }> = [];
+  const local = await stub((_hit, req) => {
+    const step = analysisStep(req.body);
+    const example = examples.find(entry => req.body.includes(entry.title));
+    assert.ok(example);
+    seen.push({ title: example.title, step });
+    if (step === "prefilter") return { answers: { label: { type: "choice", choice: example.label } }, usage: { input_tokens: 10 } };
+    const value = step === "score" ? { attentionScore: example.near ? FLOOR + 1 : FLOOR - 1 }
+      : step === "structure" ? { category: "tip", tags: ["教程/实践"], subjects: [], scope: "single", fact: null }
+      : step === "understand" ? { itemType: "tutorial_explainer", authorRole: example.role, tags: ["教程/实践"], editorialJudgment: "", titleZh: example.title, summaryZh: example.body }
+      : `title_zh: ${example.title}\nsummary_zh: ${example.body}`;
+    return { choices: [{ message: { content: typeof value === "string" ? value : JSON.stringify(value) } }], usage: { prompt_tokens: 10, completion_tokens: 10 } };
+  });
+  pointModels(local.url);
+  pointModels(local.url, ["decision-model-preview"]);
+  process.env.PREFILTER_MODEL = "decision-model-preview";
+  process.env.SCORE_MODEL = "glm-5.3-flash-selection";
+  invalidateModelCache();
+  try {
+    for (const example of examples) {
+      const id = await article("PRACTICE", { url: `https://example.com/practice-${examples.indexOf(example)}-${T}`, title: example.title, bodyText: example.body });
+      const result = await analyzeArticle(id);
+      await publishArticle(id);
+      const [publication] = await sql`SELECT visibility,eligible,selected FROM publications WHERE article_id=${id}`;
+      const stored = await row(id);
+      const steps = seen.filter(entry => entry.title === example.title).map(entry => entry.step);
+      assert.equal(stored.output.prefilter.label, example.label);
+      assert.equal(stored.selected, false);
+      if (example.label === "PASS") {
+        assert.deepEqual([stored.relevance, stored.category, stored.tags], ["pass", "tip", ["教程/实践"]]);
+        assert.deepEqual([publication!.visibility, publication!.eligible, publication!.selected], ["public", true, false]);
+        assert.equal(result!.output!.score, example.near ? FLOOR + 1 : FLOOR - 1);
+        assert.deepEqual(steps.sort(), ["prefilter", "score", "score", "structure", example.near ? "understand" : "summarize"].sort());
+        assert.equal(stored.output.writer, example.near ? "understand" : "summarize");
+        if (example.near) assert.equal(stored.output.authorRole, example.role);
+        const detail = await loadItemDetail(id);
+        assert.equal(detail.kind, "found");
+        if (detail.kind === "found") {
+          assert.equal(detail.item.category, "tip");
+          assert.equal(detail.item.summary, example.body);
+          assert.equal(detail.item.selected, false);
+        }
+        const markdown = await exportMarkdown(id);
+        assert.ok(markdown?.body.includes(example.body));
+      } else {
+        assert.deepEqual([stored.relevance, publication!.visibility, publication!.eligible], ["block", "withdrawn", false]);
+        assert.deepEqual(steps, ["prefilter"]);
+        assert.equal((await loadItemDetail(id)).kind, "not_found");
+        assert.equal(await exportMarkdown(id), null);
+      }
+      const hits = local.hits();
+      const replay = await analyzeArticle(id);
+      assert.equal(local.hits(), hits);
+      assert.deepEqual(replay!.receiptIds, result!.receiptIds);
+    }
+  } finally {
+    process.env.PREFILTER_MODEL = original.prefilter;
+    process.env.SCORE_MODEL = original.score;
+    delete process.env.SYSTEMONE_BASE_URL;
+    delete process.env.SYSTEMONE_API_KEY;
+    pointModels(provider.url);
+    invalidateModelCache();
+    await local.close();
+  }
 });
 
 test("blocked structure tags override a passing prefilter and selected scores", async () => {

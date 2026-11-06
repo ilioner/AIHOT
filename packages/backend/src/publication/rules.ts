@@ -25,17 +25,17 @@ export function channelOf(sourceKind: string, hasXPost: boolean): "x" | "news" {
   return sourceKind === "x_search" || hasXPost ? "x" : "news";
 }
 
-/** Public pool (/all): editorial sources with a title unless explicitly blocked. */
+/** Public pool (/all): passed editorial material with a title. */
 export function isPoolEligible(input: {
   participationMode: string;
   relevance: string | null;
   title: string | null;
 }): boolean {
-  return input.participationMode === "editorial" && input.relevance !== "block" && !!input.title?.trim();
+  return input.participationMode === "editorial" && input.relevance === "pass" && !!input.title?.trim();
 }
 
 /**
- * Item detail page (and its Markdown export): every unwithdrawn item from an editorial source has one,
+ * Item detail page (and its Markdown export): every passed, unwithdrawn item from an editorial source has one,
  * with or without a Chinese summary (noindex unless indexable). hot_signal material is heat evidence
  * only and has none. A paused source keeps its pages.
  */

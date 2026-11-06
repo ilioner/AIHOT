@@ -62,3 +62,20 @@ test("SSR keeps ordinary upstream misses and caller cancellations quiet", async 
   await assert.rejects(apiGet("/api/site/timeline", { signal: controller.signal }));
   assert.deepEqual(lines, []);
 });
+
+test("only search capacity failures redirect to the search-busy page", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const fetched = t.mock.method(globalThis, "fetch", async () => Response.json({ code: "temporarily_unavailable" }, { status: 503 }));
+  const busyRedirect = "/all/search-busy?q=policy";
+  await assert.rejects(loadOr404("/api/site/pool", { busyRedirect }), (error) => {
+    assert.deepEqual(error, data({ message: "unavailable" }, { status: 503 }));
+    return true;
+  });
+  fetched.mock.mockImplementation(async () => Response.json({ code: "search_busy" }, { status: 503 }));
+  await assert.rejects(loadOr404("/api/site/pool?q=policy", { busyRedirect }), (error) => {
+    assert.ok(error instanceof Response);
+    assert.equal(error.status, 302);
+    assert.equal(error.headers.get("Location"), busyRedirect);
+    return true;
+  });
+});

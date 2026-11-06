@@ -5,6 +5,8 @@
 import { tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import * as cheerio from "cheerio";
 import { marked } from "marked";
 import { after, before, test } from "node:test";
@@ -99,9 +101,63 @@ test("a passed title-only notice keeps collection time and source presentation a
     await publishArticle(id);
     for (const prefix of ["/api/site/pool?q=", "/api/v1/items?mode=all&q=", "/api/v1/agent/search?q="]) {
       const body = (await get(`${prefix}${encodeURIComponent(title)}`)).body;
-      assert.equal(body.includes(id), relevance === "unknown", `${relevance}: ${prefix}`);
+      assert.equal(body.includes(id), false, `${relevance}: ${prefix}`);
     }
+    assert.equal((await get(`/api/site/items/${id}`)).status, 404);
   }
+});
+
+test("publication requires a current completed passing analysis and preserves manual withdrawal", async () => {
+  const id = await article();
+  await sql`UPDATE analyses SET output='{"prefilter":{"label":"UNKNOWN"},"writer":"summarize"}'::jsonb WHERE article_id=${id}`;
+  await publishArticle(id);
+  assert.equal((await get(`/api/site/items/${id}`)).status, 404, "historical UNKNOWN cannot be published as pass");
+  await sql`UPDATE analyses SET output='{"prefilter":{"label":"PASS"},"writer":"summarize"}'::jsonb WHERE article_id=${id}`;
+  await sql`UPDATE articles SET processing_state='failed' WHERE id=${id}`;
+  await publishArticle(id);
+  assert.equal((await get(`/api/site/items/${id}`)).status, 404, "failed analysis stays private");
+  await sql`UPDATE articles SET processing_state='analyzed',revision=2 WHERE id=${id}`;
+  await publishArticle(id);
+  assert.equal((await get(`/api/site/items/${id}`)).status, 404, "stale analysis stays private");
+  await sql`UPDATE analyses SET input_revision=2 WHERE article_id=${id}`;
+  await publishArticle(id);
+  assert.equal((await get(`/api/site/items/${id}`)).status, 200);
+  await sql`UPDATE analyses SET origin='model' WHERE article_id=${id}`;
+  await sql`UPDATE articles SET processing_state='new' WHERE id=${id}`;
+  await publishArticle(id);
+  assert.equal((await get(`/api/site/items/${id}`)).status, 404, "unfinished model analysis stays private");
+  await sql`UPDATE articles SET processing_state='analyzed' WHERE id=${id}`;
+  await publishArticle(id);
+  assert.equal((await get(`/api/site/items/${id}`)).status, 200);
+  await setVisibility(id, { visibility: "withdrawn", reason: "manual withdrawal", version: 0 }, "test");
+  await publishArticle(id);
+  assert.equal((await get(`/api/site/items/${id}`)).status, 404);
+  const { articleId: pending } = await upsertMaterial({ sourceId: SOURCE, url: `https://example.com/${T}-pending`, title: "未经分析", bodyText: BODY, bodyStatus: "ok", via: "fetch" });
+  await publishArticle(pending);
+  assert.equal((await get(`/api/site/items/${pending}`)).status, 404);
+});
+
+test("historical policy repair blocks UNKNOWN without paying again or restoring a manual withdrawal", async () => {
+  const blocked = await article();
+  await sql`UPDATE analyses SET output='{"prefilter":{"label":"UNKNOWN"},"writer":"summarize"}'::jsonb WHERE article_id=${blocked}`;
+  const withdrawn = await article();
+  await publishArticle(withdrawn);
+  await setVisibility(withdrawn, { visibility: "withdrawn", reason: "keep withdrawn", version: 0 }, "test");
+  const [{ count: beforeReceipts }] = await sql`SELECT count(*) FROM receipts`;
+  const runRepair = () => promisify(execFile)(process.execPath, ["scripts/repair-publication-policy.ts", "--apply"], {
+    env: { ...process.env, COLLECT_ENABLED: "false", MODEL_CALLS_ENABLED: "false" },
+  });
+  await runRepair();
+  const [analysis] = await sql`SELECT relevance,selected,output FROM analyses WHERE article_id=${blocked}`;
+  assert.equal(analysis!.relevance, "block");
+  assert.equal(analysis!.selected, false);
+  assert.equal(analysis!.output.prefilter.label, "UNKNOWN");
+  assert.equal((await get(`/api/site/items/${blocked}`)).status, 404);
+  assert.equal((await get(`/api/site/items/${withdrawn}`)).status, 404);
+  assert.equal((await sql`SELECT count(*) FROM receipts`)[0]!.count, beforeReceipts);
+  const [{ count: audits }] = await sql`SELECT count(*) FROM audit_log WHERE actor='publication-policy-repair'`;
+  await runRepair();
+  assert.equal((await sql`SELECT count(*) FROM audit_log WHERE actor='publication-policy-repair'`)[0]!.count, audits);
 });
 
 // Failure modes: a revoked score falls back to the erroneous model score, zero is treated as
@@ -217,7 +273,7 @@ test("revoking a source's licence takes its articles off every exit", async () =
   assert.ok((await get("/api/v1/items?mode=selected")).body.includes(id), "v1 lists the item before");
 
   const [source] = await sql<{ updated_at: Date }[]>`SELECT updated_at FROM sources WHERE id = ${SOURCE}`;
-  const patch = { participation_mode: "isolated", site_fulltext: false, syndicate_fulltext: false };
+  const patch = { participation_mode: "hot_signal", site_fulltext: false, syndicate_fulltext: false };
   await updateSource(SOURCE, { patch, version: source!.updated_at.toISOString(), reason: "test" }, "test");
   const [queued] = await sql<{ value: { status: string } }[]>`SELECT value FROM settings WHERE key = ${`republish.source:${SOURCE}`}`;
   assert.equal(queued?.value.status, "queued", "the admin change queues a background republish");
@@ -226,7 +282,7 @@ test("revoking a source's licence takes its articles off every exit", async () =
   assert.ok(result.reduced >= 1);
   assert.equal((await get(`/api/site/items/${id}`)).status, 404);
   assert.equal((await get(`/items/${id}/markdown`)).status, 404);
-  assert.equal((await get(`/api/site/stories/${story}`)).status, 404, "the story drops an isolated source's last report");
+  assert.equal((await get(`/api/site/stories/${story}`)).status, 404, "the story drops a heat-only source's last report");
   assert.equal((await get(`/api/v1/stories/${story}`)).status, 404);
   assert.ok(!(await get("/feed/full.xml")).body.includes(`FULLTEXT-${T}`), "full feed drops the body");
   assert.ok(!(await get("/api/v1/items?mode=selected")).body.includes(id), "v1 drops the item");
@@ -350,14 +406,16 @@ test("a withdrawn item leaves the hot board and the hot APIs at once, not at the
   assert.ok(!(await get("/api/site/hot")).body.includes(publicId), "/api/site/hot still shows the event of the withdrawn item");
 });
 
-test("item pages follow one rule: unsummarised editorial items keep one, hot_signal items have none", async () => {
+test("item pages require a passing analysis; passed unsummarised notices keep one, hot_signal items have none", async () => {
   const SIGNAL = `${SOURCE}-signal`;
   await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, site_fulltext, syndicate_fulltext, next_fetch_at)
             VALUES (${SIGNAL}, 'Test signal', 'rss', 'T1', 'hot_signal', true, false, '2100-01-01')`;
   const material = (sourceId: string, name: string) =>
     upsertMaterial({ sourceId, url: `https://example.com/${T}-${name}`, title: `${name} ${T}`, bodyText: BODY, bodyHtml: `<p>${BODY}</p>`, bodyStatus: "ok", via: "fetch", publishedAt: new Date() });
-  // An editorial item the model never summarised, and a hot_signal item carrying an imported summary.
   const { articleId: plain } = await material(SOURCE, "plain");
+  await publishArticle(plain);
+  assert.equal((await get(`/api/site/items/${plain}`)).status, 404, "unanalyzed material stays private");
+  await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,selected) VALUES (${plain},1,'rule','pass',false)`;
   await publishArticle(plain);
   const { articleId: signal } = await material(SIGNAL, "signal");
   await sql`INSERT INTO analyses (article_id, input_revision, origin, relevance, category, title_zh, summary_zh, score, selected)

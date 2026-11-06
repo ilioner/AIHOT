@@ -12,11 +12,13 @@ class ApiError extends Error {
   readonly status: number;
   readonly mergedInto: string | null;
   readonly requestId: string | null;
-  constructor(status: number, mergedInto: string | null, requestId: string | null) {
+  readonly code: string | null;
+  constructor(status: number, mergedInto: string | null, requestId: string | null, code: string | null) {
     super(`api ${status}`);
     this.status = status;
     this.mergedInto = mergedInto;
     this.requestId = requestId;
+    this.code = code;
   }
 }
 
@@ -28,8 +30,8 @@ export async function apiGet<T>(path: string, init?: { signal?: AbortSignal; hea
       signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
-      const body = (await res.json().catch(() => null)) as { mergedInto?: string } | null;
-      throw new ApiError(res.status, res.status === 308 ? (body?.mergedInto ?? null) : null, res.headers.get("X-Request-Id"));
+      const body = (await res.json().catch(() => null)) as { mergedInto?: string; code?: string } | null;
+      throw new ApiError(res.status, res.status === 308 ? (body?.mergedInto ?? null) : null, res.headers.get("X-Request-Id"), body?.code ?? null);
     }
     res.headers.forEach((value, name) => init?.responseHeaders?.set(name, value));
     return (await res.json()) as T;
@@ -55,7 +57,7 @@ export async function loadOr404<T>(path: string, opts: { busyRedirect?: string; 
     if (error instanceof ApiError) {
       if (error.status === 404) throw data({ message: "not_found" }, { status: 404 });
       if (error.mergedInto && opts.merged) throw redirect(opts.merged(error.mergedInto), 308);
-      if (error.status === 503 && opts.busyRedirect) throw redirect(opts.busyRedirect);
+      if (error.status === 503 && error.code === "search_busy" && opts.busyRedirect) throw redirect(opts.busyRedirect);
       if (error.status === 400) throw data({ message: "bad_request" }, { status: 400 });
     }
     throw data({ message: "unavailable" }, { status: 503 });

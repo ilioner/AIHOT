@@ -5,7 +5,7 @@
 // A feed's modification date can also make an old article look live: correcting it must archive
 // it and remove automatic event/heat evidence without buying another analysis or sending it again.
 // A proven repost timestamp must also be retractable when the publisher cannot supply a date.
-// Settled material that never needs grouping (an isolated source's post) or a first import published
+// Settled material that never needs grouping (a blocked post) or a first import published
 // the day it was found (news, not history) must not be refused as unfinished or historical.
 import { tag } from './setup.ts';
 import assert from 'node:assert/strict';
@@ -22,13 +22,13 @@ import { QUEUES } from '@aihot/backend/jobs/queue';
 
 const T=tag();
 const source=`date-correction-${T}`;
-const isolated=`date-correction-isolated-${T}`;
+const blocked=`date-correction-blocked-${T}`;
 const old='2020-02-15T00:00:00.000Z';
 const corrected='2020-10-29T00:00:00.000Z';
 before(async()=>{
   await getBoss();
   await sql`INSERT INTO sources(id,name,kind,tier,participation_mode,site_fulltext) VALUES(${source},'Verified date','rss','T1','editorial',true)`;
-  await sql`INSERT INTO sources(id,name,kind,tier,participation_mode) VALUES(${isolated},'Isolated','rss','T2','isolated')`;
+  await sql`INSERT INTO sources(id,name,kind,tier,participation_mode) VALUES(${blocked},'Blocked','rss','T2','editorial')`;
   installModules([{name:'date-check',on:{articleChanged:async(change,tx)=>{
     await tx`INSERT INTO settings(key,value) VALUES(${`date-hook:${change.id}`},${tx.json(change)})`;
   }}}]);
@@ -281,12 +281,12 @@ test('a first import published the day it was found is news: its date is correct
 
 test('a settled post that never needs grouping can have its date corrected',async()=>{
   const discoveredAt=new Date(Date.now()-3*3600_000);
-  const {articleId:id}=await upsertMaterial({sourceId:isolated,url:`https://example.test/${tag()}`,title:'Isolated post',bodyText:'Body',bodyStatus:'ok',via:'fetch',publishedAt:discoveredAt,discoveredAt});
-  await sql`UPDATE articles SET processing_state='skipped' WHERE id=${id}`;
+  const {articleId:id}=await upsertMaterial({sourceId:blocked,url:`https://example.test/${tag()}`,title:'Blocked post',bodyText:'Body',bodyStatus:'ok',via:'fetch',publishedAt:discoveredAt,discoveredAt});
+  await sql`UPDATE articles SET processing_state='blocked' WHERE id=${id}`;
   await publishArticle(id);
   const publishedAt=new Date(discoveredAt.getTime()-3600_000).toISOString();
   const plan=(await previewPublicationDateCorrection(id,publishedAt))!;
-  const result=await correctPublicationDate(id,{version:plan.version,hash:plan.hash,publishedAt,requestId:`isolated-${id}`,reason:'Original publication verified'},'test');
+  const result=await correctPublicationDate(id,{version:plan.version,hash:plan.hash,publishedAt,requestId:`blocked-${id}`,reason:'Original publication verified'},'test');
   assert.equal(result.status,'corrected');
   const [a]=await sql`SELECT published_at,grouping_status FROM articles WHERE id=${id}`;
   assert.equal(a!.published_at.toISOString(),publishedAt);

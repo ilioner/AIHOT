@@ -73,9 +73,9 @@ test("withdrawn reports and changed roles are counted as they stand now", async 
   await signal(s, await source("a"), 1);
   await signal(s, await source("b"), 1, { withdrawn: true });
   await signal(s, await source("c", { mode: "hot_signal" }), 1, { kind: "editorial" }); // since demoted
-  await signal(s, await source("d", { mode: "isolated" }), 1);
+  await signal(s, await source("d"), 1, { withdrawn: true });
   const r = await rowOf(s);
-  assert.equal(Number(r?.participants), 2, "a and c; the withdrawn report and the isolated source are out");
+  assert.equal(Number(r?.participants), 2, "a and c; the withdrawn reports are out");
   assert.equal(Number(r?.editorial_participants), 1);
   assert.equal(Number(r?.signal_participants), 1);
 });

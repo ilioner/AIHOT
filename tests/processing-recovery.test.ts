@@ -51,10 +51,10 @@ afterEach(async () => {
   await sql`DELETE FROM pgboss.job WHERE data->>'articleId' IN (SELECT id FROM articles WHERE source_id=${SOURCE})`;
 });
 
-test("isolated material is analyzed with receipts but stays internal on every admin view", async (context) => {
-  const source = `${SOURCE}-internal`;
-  await sql`INSERT INTO sources (id,name,kind,tier,participation_mode) VALUES (${source},'Internal','external','T1','isolated')`;
-  const { articleId } = await upsertMaterial({ sourceId: source, url: `https://example.org/${T}/internal`, title: "教育部发布职业教育政策",
+test("editorial material becomes public only after passing analysis with receipts", async (context) => {
+  const source = `${SOURCE}-editorial`;
+  await sql`INSERT INTO sources (id,name,kind,tier,participation_mode) VALUES (${source},'Editorial','external','T1','editorial')`;
+  const { articleId } = await upsertMaterial({ sourceId: source, url: `https://example.org/${T}/editorial`, title: "教育部发布职业教育政策",
     bodyText: "教育部发布职业教育课程标准，明确职业院校教学计划和实施时间。".repeat(20), bodyStatus: "ok", via: "fetch", publishedAt: new Date() });
   original = false;
   refuseScore = false;
@@ -66,20 +66,21 @@ test("isolated material is analyzed with receipts but stays internal on every ad
     await sql`DELETE FROM pgboss.job WHERE data->>'articleId'=${articleId}`;
   });
   await settleNonEditorial(articleId);
+  assert.equal((await loadItemDetail(articleId)).kind, "not_found");
   const jobs = await sql`SELECT name FROM pgboss.job WHERE data->>'articleId'=${articleId}`;
   assert.ok(jobs.some(job => job.name === QUEUES.analyze));
   assert.equal((await processArticle(articleId)).state, "pass");
   assert.ok(calls.length > beforeCalls);
   const chain = (await contentChain(articleId))!;
   assert.equal(chain.article.processing_state, "analyzed");
-  assert.equal(chain.article.status_reason, "仅内部参考");
+  assert.equal(chain.article.status_reason, "公开");
   assert.ok(chain.analyses[0]!.receipts.length > 0);
-  assert.equal(chain.publication!.visibility, "withdrawn");
+  assert.equal(chain.publication!.visibility, "public");
   assert.equal(chain.publication!.selected, false);
-  assert.equal((await loadItemDetail(articleId)).kind, "not_found");
-  assert.equal((await searchContent(articleId))[0]!.status_reason, "仅内部参考");
-  assert.equal((await sourceDetail(source))!.items[0]!.status_reason, "仅内部参考");
-  assert.equal((await sql`SELECT 1 FROM pgboss.job WHERE name=${QUEUES.group} AND data->>'articleId'=${articleId}`).length, 0);
+  assert.notEqual((await loadItemDetail(articleId)).kind, "not_found");
+  assert.equal((await searchContent(articleId))[0]!.status_reason, "公开");
+  assert.equal((await sourceDetail(source))!.items[0]!.status_reason, "公开");
+  assert.equal((await sql`SELECT 1 FROM pgboss.job WHERE name=${QUEUES.group} AND data->>'articleId'=${articleId}`).length, 1);
 });
 
 async function article(name: string) {

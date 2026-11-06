@@ -43,9 +43,9 @@ test("title-only articles wait for evidence without a model call (no prefilter l
   assert.equal(isPoolEligible({ participationMode: "editorial", relevance: out.relevance, title: out.titleZh }), false);
 });
 
-test("an explicit BLOCK is the only relevance result excluded from the editorial pool", () => {
+test("only a passing judgement enters the editorial pool", () => {
   for (const relevance of ["pass", "unknown", null]) {
-    assert.equal(isPoolEligible({ participationMode: "editorial", relevance, title: "有标题" }), true, relevance ?? "null");
+    assert.equal(isPoolEligible({ participationMode: "editorial", relevance, title: "有标题" }), relevance === "pass", relevance ?? "null");
   }
   assert.equal(isPoolEligible({ participationMode: "editorial", relevance: "block", title: "有标题" }), false);
   assert.equal(isPoolEligible({ participationMode: "hot_signal", relevance: "unknown", title: "有标题" }), false);
@@ -90,18 +90,32 @@ test("a later material revision can be scored after the title-only revision wait
   assert.equal(out.selected, true);
 });
 
+test("BLOCK and UNKNOWN original posts stop before scoring and keep the original prefilter label", async () => {
+  for (const judgement of ["BLOCK", "UNKNOWN"]) {
+    label = judgement;
+    steps.length = 0;
+    const run = await runFresh(article({ xPost: { text: "", media: [] } }));
+    assert.equal(run.prefilter?.label, judgement);
+    assert.deepEqual(steps, ["prefilter"]);
+    assert.equal(normalizeAnalysis(run).relevance, "block");
+  }
+  label = "PASS";
+});
+
 test("PDF notices classify their name without scoring, writing or reading the document", async () => {
   const input = article({ sourceMetadata: { title: "教育部印发新文件", itemUrl: "https://example.org/news", categories: [], tags: [], documentUrl: "https://example.org/policy.pdf" } });
   for (const judgement of ["PASS", "BLOCK", "UNKNOWN"]) {
     label = judgement;
     steps.length = 0;
-    const out = normalizeAnalysis(await runFresh(input));
+    const run = await runFresh(input);
+    const out = normalizeAnalysis(run);
+    assert.equal(run.prefilter?.label, judgement);
     assert.deepEqual(steps, judgement === "PASS" ? ["prefilter", "structure"] : ["prefilter"]);
-    assert.equal(out.relevance, judgement.toLowerCase());
+    assert.equal(out.relevance, judgement === "PASS" ? "pass" : "block");
     assert.equal(out.selected, false);
     assert.equal(out.score, null);
     assert.equal(out.summaryZh, "");
-    assert.equal(isPoolEligible({ participationMode: "editorial", relevance: out.relevance, title: out.titleZh }), judgement !== "BLOCK");
+    assert.equal(isPoolEligible({ participationMode: "editorial", relevance: out.relevance, title: out.titleZh }), judgement === "PASS");
   }
   label = "PASS";
 });

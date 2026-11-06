@@ -81,7 +81,7 @@
 | `config` | 每种信源的配置，见 [信源](sources.md) |
 | `tier` | 信源分级：`T1` 官方一手、`T1_5` 官方账号与准官方、`T2` 媒体与个人、`EXCLUDE_MP` 不参与精选。不同分级的入选门槛不同。`T1` 就是“一手”，不用另外标 |
 | `owner_entity_id` | 可选，这个信源属于哪家公司（`ENTITIES` 的 id）。同一家公司的几个信源在热度里只算一个参与方；`T1_5` 的官方账号要当代表报道，也要填它（见 [信源](sources.md)） |
-| `participation_mode` | `editorial` 进精选和全部动态；`hot_signal` 只作热度证据；`isolated` 不进任何公开页面 |
+| `participation_mode` | `editorial` 分析通过后进全部动态，满足精选条件后进精选；`hot_signal` 只作热度证据 |
 | `site_fulltext` | 站内能不能展示全文。**默认关**：只展示摘要和原文链接。只有来源明确允许时才打开 |
 | `syndicate_fulltext` | 全文 RSS 能不能带正文。**默认关**；只在站内也展示全文时生效，来源明确允许转载时才打开 |
 

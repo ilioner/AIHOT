@@ -7,9 +7,9 @@
       "tags": ["AI工具", "工具目录"], "site_fulltext": false, "syndicate_fulltext": false
     },
     {
-      "id": "catalog-aihot-tip", "name": "AIHOT · AI 精选教程（内部参考）", "kind": "external", "config": {},
-      "tier": "T2", "participation_mode": "isolated", "interval_minutes": 1440,
-      "tags": ["教程/实践", "待再分发授权"], "site_fulltext": false, "syndicate_fulltext": false
+      "id": "catalog-aihot-tip", "name": "AIHOT · AI 精选教程", "kind": "external", "config": {},
+      "tier": "T2", "participation_mode": "editorial", "interval_minutes": 1440,
+      "tags": ["教程/实践"], "site_fulltext": false, "syndicate_fulltext": false
     },
     {
       "id": "catalog-360-teacher", "name": "360 AI · 教师的 AI 辅助", "kind": "external", "config": {},
