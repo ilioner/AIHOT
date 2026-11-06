@@ -37,7 +37,8 @@ test("indexing and sitemap require a readable source, while manual archive index
   const future = await fixture("Not released yet");
   const [archived] = await sql`SELECT eligible, selected, indexable FROM publications WHERE article_id = ${archive}`;
   assert.deepEqual({ ...archived }, { eligible: true, selected: false, indexable: false }, "an undated archive is listed at its discovery time without becoming selected or indexed");
-  for (const id of [archive, blocked, signal]) await setSeoIndexed(id, { indexed: true, reason: "local indexing check" }, "test");
+  await setSeoIndexed(archive, { indexed: true, reason: "local indexing check" }, "test");
+  for (const id of [blocked, signal]) await assert.rejects(setSeoIndexed(id, { indexed: true, reason: "local indexing check" }, "test"), { code: "conflict" });
   assert.equal((await app.inject(`/api/site/items/${archive}`)).statusCode, 200);
   for (const id of [blocked, signal]) {
     assert.equal((await app.inject(`/api/site/items/${id}`)).statusCode, 404);

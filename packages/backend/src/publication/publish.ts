@@ -9,12 +9,13 @@ import { collapseWhitespace, isChineseText } from "../lib/text.ts";
 import type { XPostData } from "../content/materials.ts";
 import { originalPostCopy } from "../content/posts.ts";
 import { hasBlockedTag } from "../editorial/vocabulary.ts";
+import { prefilterPassed } from "../editorial/manual-prefilter.ts";
 import { itemUrl } from "./links.ts";
 import { pickRepresentative, REPRESENTATIVE_COLUMNS, type RepresentativeIdentity } from "./representative.ts";
 import { enqueue, QUEUES, shutdownSignal } from "../jobs/queue.ts";
 import { emit } from "../modules.ts";
 import {
-  bodyModeOf, channelOf, displayTags, isIndexable, isPoolEligible, isSelectable, isIndependentSelectedSource, mayRedistribute, publicSourceName, type SourceFacts,
+  bodyModeOf, channelOf, directoryPolicy, displayTags, isIndexable, isPoolEligible, isSelectable, isIndependentSelectedSource, mayRedistribute, publicSourceName, type SourceFacts,
 } from "./rules.ts";
 import { foldableSelectionCondition, latestCompositeCondition, ownFactEvidenceCondition } from "./scope.ts";
 
@@ -33,6 +34,7 @@ interface ArticleRow {
   backfill: boolean;
   body_status: string;
   body_text: string | null;
+  excerpt: string | null;
   x_post: XPostData | null;
   x_article: { text?: string } | null;
   grouped_at: Date | null;
@@ -44,7 +46,7 @@ interface AnalysisRow {
   id: number;
   origin: string;
   input_revision: number;
-  output: { prefilter?: { label?: string } | null; writer?: string };
+  output: { prefilter?: { label?: string } | null; writer?: string; manualPrefilter?: unknown; sourcePrefilter?: unknown };
   relevance: string | null;
   category: string | null;
   tags: string[];
@@ -244,7 +246,7 @@ export async function publishArticle(articleId: string, options: PublishOptions 
 export async function publishArticleTx(tx: Tx, articleId: string, options: PublishOptions = {}): Promise<PublishResult | null> {
   const [article] = await tx<ArticleRow[]>`
     SELECT id, revision, processing_state, processing_error, source_id, url, title, language, published_at, discovered_at, timeline_at, backfill, body_status,
-           body_text, x_post, x_article, grouped_at, grouping_status, selection_adds_value
+           body_text, excerpt, x_post, x_article, grouped_at, grouping_status, selection_adds_value
     FROM articles WHERE id = ${articleId} FOR UPDATE`;
   if (!article) return null;
   // Explicit imports carry an already-public editorial decision, not a new pending judgement.
@@ -275,26 +277,28 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
   const now = options.now ?? new Date();
 
   const f = override?.fields ?? {};
+  const directory = directoryPolicy(source.id, source.participation_mode);
   const isChineseTitle = isChineseText(article.title, article.language);
   const zhTitle = analysis?.title_zh?.trim() ? analysis.title_zh : null;
   const original = originalPostCopy(article.x_post, article.url, article.x_article);
-  const title = pickString(f.title, original?.title ?? zhTitle ?? collapseWhitespace(article.title));
-  const summary = pickString(f.summary, original ? original.summary : analysis?.summary_zh ?? null);
-  const notes = original ? null : analysis?.notes_zh ?? null;
-  const category = pickString(f.category, analysis?.category ?? null);
-  const tags = Array.isArray(f.tags) ? (f.tags as string[]) : [...new Set([...(analysis?.tags ?? []), ...(analysis?.subjects ?? []).map((s) => `entity:${s}`)])];
-  const score = f.score === null || typeof f.score === "number" ? f.score : analysis?.score ?? null;
-  const relevance = hasBlockedTag(tags) ? "block" : typeof f.relevance === "string" ? (f.relevance as string) : analysis?.relevance ?? null;
+  const title = pickString(f.title, directory ? collapseWhitespace(article.title) : original?.title ?? zhTitle ?? collapseWhitespace(article.title));
+  const summary = pickString(f.summary, directory ? article.excerpt?.trim() || null : original ? original.summary : analysis?.summary_zh ?? null);
+  const notes = directory || original ? null : analysis?.notes_zh ?? null;
+  const category = pickString(f.category, directory?.category ?? analysis?.category ?? null);
+  const tags = Array.isArray(f.tags) ? (f.tags as string[]) : directory ? [] : [...new Set([...(analysis?.tags ?? []), ...(analysis?.subjects ?? []).map((s) => `entity:${s}`)])];
+  const score = directory ? null : f.score === null || typeof f.score === "number" ? f.score : analysis?.score ?? null;
+  const relevance = directory ? "pass" : hasBlockedTag(tags) ? "block" : typeof f.relevance === "string" ? (f.relevance as string) : analysis?.relevance ?? null;
   const judgedSelected = typeof f.selected === "boolean" ? (f.selected as boolean) : analysis?.selected ?? null;
   const prefilterLabel = analysis?.output?.prefilter?.label;
-  const passed = analysis?.input_revision === article.revision && analysis.relevance === "pass"
+  const effectivePrefilterPass = prefilterPassed(analysis?.output, f, article.revision, article.source_id);
+  const passed = !!directory || (analysis?.input_revision === article.revision && analysis.relevance === "pass"
     && article.processing_state !== "failed" && !article.processing_error
-    && (analysis.origin !== "model" || (article.processing_state === "analyzed" && prefilterLabel === "PASS" && !!analysis.output?.writer))
-    && (!prefilterLabel || prefilterLabel === "PASS") && analysis.output?.writer !== "none";
+    && (analysis.origin !== "model" || (article.processing_state === "analyzed" && effectivePrefilterPass && !!analysis.output?.writer))
+    && (!prefilterLabel || effectivePrefilterPass) && analysis.output?.writer !== "none");
   const visibility = source.participation_mode === "editorial" && (!passed || relevance !== "pass")
     ? "withdrawn" : (override?.visibility ?? "public");
   const eligible = passed && isPoolEligible({ participationMode: source.participation_mode, relevance, title });
-  const selectionCandidate = isSelectable(eligible && (!!summary || !!original)
+  const selectionCandidate = !directory && isSelectable(eligible && (!!summary || !!original)
     && (!article.backfill || article.published_at !== null || !!options.releasedAt), judgedSelected, source.tier);
   // Scoring nominates a report; a completed identity/value decision admits it to selection.
   // A historical import already has its public decision. Preserve that confirmed state on rebuild.
@@ -317,7 +321,7 @@ export async function publishArticleTx(tx: Tx, articleId: string, options: Publi
     visibility, sourceMode: source.participation_mode, hasSummary: !!summary, selected, seoIndexedAt: previous?.seo_indexed_at ?? null, seoExcludedAt: previous?.seo_excluded_at ?? null,
   });
   const searchText = collapseWhitespace(
-    [title, originalTitle, summary, publicSourceName(source.name), ...displayTags(tags), ...(analysis?.subjects ?? [])].filter(Boolean).join(" "),
+    [title, originalTitle, summary, publicSourceName(source.name), ...displayTags(tags), ...(directory ? [] : analysis?.subjects ?? [])].filter(Boolean).join(" "),
   ).toLowerCase();
 
   // Ordinary selected reports share their reading group's first arrival; independent articles keep

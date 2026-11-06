@@ -8,12 +8,14 @@ import { createSource, updateSource } from "@aihot/backend/admin/sources";
 import { contentChain, searchContent, overrideFields, rerun, setSeoIndexed, setVisibility } from "@aihot/backend/admin/content";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { publishArticle } from "@aihot/backend/publication/publish";
-import { getBoss, stopBoss } from "@aihot/backend/jobs/queue";
+import { getBoss, stopBoss, QUEUES } from "@aihot/backend/jobs/queue";
+import { queueProcessing } from "@aihot/backend/jobs/content";
 import { sha256 } from "@aihot/backend/lib/ids";
 import { buildApp } from "../apps/api/src/app.ts";
 import { DEFAULT_CATEGORIES } from "@aihot/contracts/taxonomy";
 import { updateCategories } from "@aihot/backend/admin/settings";
 import { loadCategories } from "@aihot/backend/taxonomy";
+import { previewSourcePrefilter, requeueSourcePrefilter } from "@aihot/backend/admin/source-prefilter";
 
 const T = tag();
 const sourceId = `admin-${T}`;
@@ -24,6 +26,84 @@ after(async () => { await app.close(); await stopBoss(); await closeDb(); });
 async function article() {
   return (await upsertMaterial({ sourceId, url: `https://example.com/${tag()}`, title: "审查材料", bodyText: "正文", bodyStatus: "ok", via: "fetch", publishedAt: new Date() })).articleId;
 }
+
+test("source-policy backfill is scoped, skips busy jobs, preserves evidence and withdrawal, and queues once", async () => {
+  const direct = ["weblist-aixzd-tools", "catalog-aihot-tip", "catalog-aibase", "catalog-360-student", "catalog-360-teacher"];
+  const accepted: string[] = [];
+  for (const source of direct) {
+    await sql`INSERT INTO sources (id,name,kind,tier,participation_mode) VALUES (${source},${source},'rss','T2','editorial')`;
+    for (const label of ["UNKNOWN", "BLOCK"]) {
+      const id = await article();
+      await sql`UPDATE articles SET source_id=${source},processing_state='blocked' WHERE id=${id}`;
+      await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,output)
+        VALUES (${id},1,'model','block',${sql.json({ prefilter: { label, reason: "旧规则" } })})`;
+      accepted.push(id);
+    }
+  }
+  const busy = accepted.pop()!;
+  await queueProcessing(busy, { step: "analyze" });
+  const withdrawn = accepted[0]!;
+  await publishArticle(withdrawn);
+  await setVisibility(withdrawn, { visibility: "withdrawn", version: 0, reason: "不要解除人工下架" }, "test");
+  const excluded: string[] = [];
+  await sql`INSERT INTO sources (id,name,kind,participation_mode) VALUES ('catalog-360-topics','360 专题','external','editorial')`;
+  for (const mode of ["other", "stale", "passed", "processed", "directory"]) {
+    const id = await article();
+    await sql`UPDATE articles SET source_id=${mode === "other" ? sourceId : mode === "directory" ? "catalog-360-topics" : direct[0]!},processing_state='blocked',revision=${mode === "stale" ? 2 : 1} WHERE id=${id}`;
+    await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,output)
+      VALUES (${id},1,'model','block',${sql.json({ prefilter: { label: mode === "passed" ? "PASS" : "UNKNOWN" }, ...(mode === "processed" ? { sourcePrefilter: { sourceId: direct[0], revision: 1 } } : {}) })})`;
+    excluded.push(id);
+  }
+  const evidence = await sql`SELECT * FROM analyses ORDER BY id`;
+  const preview = await previewSourcePrefilter();
+  assert.deepEqual(preview.map(entry => entry.articleId).sort(), accepted.slice().sort());
+  const applied = await requeueSourcePrefilter(preview, "test", "使用者批准六个来源预筛直通");
+  assert.equal(applied.filter(entry => entry.status === "queued").length, accepted.length);
+  assert.equal((await previewSourcePrefilter()).length, 0);
+  const replay = await requeueSourcePrefilter(preview, "test", "重试不重复投递");
+  assert.ok(replay.every(entry => entry.status === "skipped"));
+  assert.deepEqual(await sql`SELECT * FROM analyses ORDER BY id`, evidence);
+  assert.equal((await sql`SELECT visibility FROM editorial_overrides WHERE article_id=${withdrawn}`)[0]!.visibility, "withdrawn");
+  assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${withdrawn}`)[0]!.visibility, "withdrawn");
+  for (const id of accepted) {
+    assert.equal((await sql`SELECT processing_state FROM articles WHERE id=${id}`)[0]!.processing_state, "new");
+    assert.equal((await sql`SELECT count(*)::int AS count FROM pgboss.job WHERE name=${QUEUES.analyze} AND data->>'articleId'=${id}`)[0]!.count, 1);
+    assert.equal((await sql`SELECT count(*)::int AS count FROM audit_log WHERE action='content.source-prefilter' AND subject=${`content:${id}`}`)[0]!.count, 1);
+  }
+  assert.equal((await sql`SELECT processing_state FROM articles WHERE id=${busy}`)[0]!.processing_state, "blocked");
+  for (const id of excluded) assert.equal((await sql`SELECT 1 FROM pgboss.job WHERE data->>'articleId'=${id}`).length, 0);
+});
+
+test("source backfill rechecks a changed revision and rolls back state, publication and jobs when auditing fails", async () => {
+  const ids = [await article(), await article()];
+  for (const id of ids) {
+    await sql`UPDATE articles SET source_id='catalog-aihot-tip',processing_state='blocked' WHERE id=${id}`;
+    await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,output)
+      VALUES (${id},1,'model','block','{"prefilter":{"label":"UNKNOWN"}}')`;
+    await publishArticle(id);
+  }
+  const preview = (await previewSourcePrefilter()).filter(entry => ids.includes(entry.articleId));
+  await sql`UPDATE articles SET revision=2 WHERE id=${ids[0]!}`;
+  const before = (await sql`SELECT * FROM publications WHERE article_id=${ids[1]!}`)[0]!;
+  await sql`CREATE FUNCTION reject_source_prefilter_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.action='content.source-prefilter' THEN RAISE EXCEPTION 'test audit failure'; END IF;
+      RETURN NEW;
+    END $$`;
+  await sql`CREATE TRIGGER reject_source_prefilter_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION reject_source_prefilter_audit()`;
+  try {
+    const result = await requeueSourcePrefilter(preview, "test", "验证失败不误报成功");
+    assert.equal(result.find(entry => entry.articleId === ids[0])!.status, "skipped");
+    assert.equal(result.find(entry => entry.articleId === ids[1])!.status, "failed");
+    assert.equal((await sql`SELECT processing_state FROM articles WHERE id=${ids[1]!}`)[0]!.processing_state, "blocked");
+    assert.deepEqual((await sql`SELECT * FROM publications WHERE article_id=${ids[1]!}`)[0], before);
+    assert.equal((await sql`SELECT 1 FROM pgboss.job WHERE data->>'articleId'=${ids[1]!}`).length, 0);
+  } finally {
+    await sql`DROP TRIGGER reject_source_prefilter_audit ON audit_log`;
+    await sql`DROP FUNCTION reject_source_prefilter_audit()`;
+    await sql`UPDATE articles SET revision=2 WHERE id=${ids[1]!}`;
+  }
+});
 
 test("admin status distinguishes waiting, failures, rule blocks and manual withdrawal", async () => {
   const id = await article();
@@ -51,6 +131,181 @@ test("only analyzed passing content is public, even without a summary or source 
   assert.equal((await contentChain(id))!.article.status_reason, "公开");
   await sql`UPDATE articles SET body_status='ok' WHERE id=${id}`;
   assert.equal((await searchContent(id))[0]!.status_reason, "公开");
+});
+
+test("ineffective publication commands return conflicts without saving overrides, indexing marks or successful audits", async () => {
+  const headers = await adminHeaders();
+  for (const label of ["UNKNOWN", "BLOCK"]) {
+    const id = await article();
+    await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,summary_zh,selected,output)
+      VALUES (${id},1,'model','block','已有摘要',false,${sql.json({ prefilter: { label }, writer: "summarize" })})`;
+    await sql`UPDATE articles SET processing_state='blocked' WHERE id=${id}`;
+    await publishArticle(id);
+    const [before] = await sql`SELECT * FROM publications WHERE article_id=${id}`;
+    for (const [command, payload] of [
+      ["visibility", { visibility: "public", version: 0, reason: "尝试公开" }],
+      ["visibility", { visibility: "summary-only", version: 0, reason: "尝试仅摘要" }],
+      ["seo", { indexed: true, reason: "尝试收录" }],
+      ["override", { fields: { category: "tip", selected: true }, version: 0, reason: "尝试强制精选" }],
+    ] as const) {
+      const response = await app.inject({ method: "POST", url: `/api/admin/content/${id}/${command}`, headers, payload });
+      assert.equal(response.statusCode, 409, response.body);
+      assert.ok(response.json().detail.includes(label), response.body);
+      assert.deepEqual((await sql`SELECT * FROM publications WHERE article_id=${id}`)[0], before);
+      assert.equal((await sql`SELECT 1 FROM editorial_overrides WHERE article_id=${id}`).length, 0);
+      assert.equal((await sql`SELECT 1 FROM audit_log WHERE subject=${`content:${id}`}`).length, 0);
+    }
+    await overrideFields(id, { fields: { category: "tip", title: "已保存但未公开的标题" }, version: 0, reason: "只校正内容" }, "test");
+    const chain = (await contentChain(id))!;
+    assert.equal(chain.override!.fields.title, "已保存但未公开的标题");
+    assert.equal(chain.publication!.title, "已保存但未公开的标题");
+    assert.equal(chain.publication!.visibility, "withdrawn");
+    await sql`UPDATE editorial_overrides SET fields=fields || '{"selected":true}'::jsonb WHERE article_id=${id}`;
+    await overrideFields(id, { fields: { title: "保留旧精选意图的普通修正" }, version: 1, reason: "不重新要求强制精选" }, "test");
+    const retained = (await contentChain(id))!;
+    assert.equal(retained.override!.fields.selected, true);
+    assert.equal(retained.publication!.title, "保留旧精选意图的普通修正");
+    assert.equal(retained.publication!.visibility, "withdrawn");
+    assert.equal(retained.publication!.selected, false);
+  }
+});
+
+test("indexing requires a public editorial page with a summary, while queued selection is saved without claiming admission", async () => {
+  const id = await article();
+  await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,selected) VALUES (${id},1,'rule','pass',false)`;
+  await publishArticle(id);
+  await assert.rejects(setSeoIndexed(id, { indexed: true, reason: "无摘要" }, "test"), { code: "conflict" });
+  assert.equal((await sql`SELECT seo_indexed_at FROM publications WHERE article_id=${id}`)[0]!.seo_indexed_at, null);
+  await sql`UPDATE analyses SET summary_zh='可阅读摘要' WHERE article_id=${id}`;
+  await publishArticle(id);
+  const correction = await overrideFields(id, { fields: { selected: true }, version: 0, reason: "等待归组" }, "test");
+  assert.equal(correction!.selected, false);
+  assert.equal((await sql`SELECT selection_candidate FROM publications WHERE article_id=${id}`)[0]!.selection_candidate, true);
+  await setVisibility(id, { visibility: "withdrawn", version: 1, reason: "人工下架" }, "test");
+  await assert.rejects(setSeoIndexed(id, { indexed: true, reason: "下架不能收录" }, "test"), { code: "conflict" });
+  await assert.rejects(overrideFields(id, { fields: { selected: true }, version: 2, reason: "下架不能强制精选" }, "test"), { code: "conflict" });
+  await setVisibility(id, { visibility: "public", version: 2, reason: "恢复公开" }, "test");
+  await setSeoIndexed(id, { indexed: true, reason: "恢复后收录" }, "test");
+  assert.equal((await sql`SELECT indexable FROM publications WHERE article_id=${id}`)[0]!.indexable, true);
+});
+
+test("UNKNOWN bulk review previews a fixed scope, records manual PASS without publishing, and replays exactly once", async () => {
+  const headers = await adminHeaders();
+  const id = await article();
+  await sql`UPDATE articles SET title=${`bulk-${T}`},processing_state='blocked' WHERE id=${id}`;
+  await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,output)
+    VALUES (${id},1,'model','block','{"prefilter":{"label":"UNKNOWN","reason":"证据不确定"}}')`;
+  await publishArticle(id);
+  const listed = await app.inject({ method: "GET", url: `/api/admin/content?prefilter=UNKNOWN&q=bulk-${T}`, headers });
+  assert.equal(listed.statusCode, 200);
+  assert.equal(listed.json().rows[0].prefilter_label, "UNKNOWN");
+  const preview = await app.inject({ method: "POST", url: "/api/admin/content/prefilter-pass/preview", headers,
+    payload: { q: `bulk-${T}`, all: true } });
+  assert.equal(preview.statusCode, 200, preview.body);
+  assert.equal(preview.json().total, 1);
+  const payload = { token: preview.json().token, reason: "已核对原文，属于可复现的 AI 实践" };
+  const anonymous = await app.inject({ method: "POST", url: "/api/admin/content/prefilter-pass", payload });
+  assert.equal(anonymous.statusCode, 401);
+  const denied = await app.inject({ method: "POST", url: "/api/admin/content/prefilter-pass", headers: { cookie: headers.cookie }, payload });
+  assert.equal(denied.statusCode, 403);
+  const submit = () => app.inject({ method: "POST", url: "/api/admin/content/prefilter-pass", headers, payload });
+  const applied = await submit();
+  assert.equal(applied.statusCode, 200, applied.body);
+  assert.deepEqual([applied.json().succeeded, applied.json().skipped, applied.json().failed], [1, 0, 0]);
+  assert.deepEqual((await submit()).json(), applied.json());
+  const changedReason = await app.inject({ method: "POST", url: "/api/admin/content/prefilter-pass", headers,
+    payload: { ...payload, reason: "重复请求不可更改理由" } });
+  assert.equal(changedReason.statusCode, 409);
+  const chain = (await contentChain(id))!;
+  assert.equal(chain.override!.fields.manualPrefilter && (chain.override!.fields.manualPrefilter as Record<string, unknown>).revision, 1);
+  assert.equal(chain.article.processing_state, "new");
+  assert.equal(chain.publication!.visibility, "withdrawn");
+  assert.equal((await sql`SELECT output->'prefilter'->>'label' AS label FROM analyses WHERE article_id=${id}`)[0]!.label, "UNKNOWN");
+  assert.equal((await sql`SELECT 1 FROM audit_log WHERE subject=${`content:${id}`} AND action='content.prefilter-pass'`).length, 1);
+  assert.equal((await sql`SELECT 1 FROM pgboss.job WHERE name='content.analyze' AND data->>'articleId'=${id}`).length, 1);
+  await assert.rejects(overrideFields(id, { fields: {}, clear: ["manualPrefilter"], reason: "不能经普通修正篡改", version: 1 }, "test"));
+});
+
+test("bulk review skips changed items and never includes later arrivals or BLOCK", async () => {
+  const headers = { ...await adminHeaders(), "idempotency-key": `changed-${T}` };
+  const ids = [await article(), await article(), await article()];
+  for (const id of ids) {
+    await sql`UPDATE articles SET title=${`changed-${T}`},processing_state='blocked' WHERE id=${id}`;
+    await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,output)
+      VALUES (${id},1,'model','block','{"prefilter":{"label":"UNKNOWN"}}')`;
+  }
+  const preview = await app.inject({ method: "POST", url: "/api/admin/content/prefilter-pass/preview", headers, payload: { all: true, q: `changed-${T}` } });
+  assert.equal(preview.statusCode, 200, preview.body);
+  await sql`UPDATE articles SET revision=2 WHERE id=${ids[0]!}`;
+  await sql`UPDATE articles SET processing_state='new' WHERE id=${ids[1]!}`;
+  const busyJob = await queueProcessing(ids[2]!, { step: "analyze", attemptTag: `already-queued-${T}` });
+  assert.ok(busyJob);
+  const later = await article();
+  await sql`UPDATE articles SET title=${`changed-${T}`},processing_state='blocked' WHERE id=${later}`;
+  await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,output)
+    VALUES (${later},1,'model','block','{"prefilter":{"label":"UNKNOWN"}}')`;
+  const response = await app.inject({ method: "POST", url: "/api/admin/content/prefilter-pass", headers,
+    payload: { token: preview.json().token, reason: "核对批次" } });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.deepEqual([response.json().succeeded, response.json().skipped, response.json().failed], [0, 3, 0]);
+  assert.equal((await sql`SELECT 1 FROM pgboss.job WHERE name=${QUEUES.analyze} AND data->>'articleId'=${ids[2]!}`).length, 1);
+  assert.equal((await sql`SELECT 1 FROM editorial_overrides WHERE article_id=${later}`).length, 0);
+  await sql`UPDATE analyses SET output='{"prefilter":{"label":"BLOCK"}}' WHERE article_id=${later}`;
+  const blocked = await app.inject({ method: "POST", url: "/api/admin/content/prefilter-pass/preview", headers, payload: { ids: [later] } });
+  assert.equal(blocked.statusCode, 200, blocked.body);
+  assert.equal(blocked.json().eligible, 0);
+});
+
+test("bulk review returns individual failures and rolls their writes back without losing successful items", async () => {
+  const headers = { ...await adminHeaders(), "idempotency-key": `partial-${T}` };
+  const ids = [await article(), await article()];
+  for (const id of ids) {
+    await sql`UPDATE articles SET processing_state='blocked' WHERE id=${id}`;
+    await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,output)
+      VALUES (${id},1,'model','block','{"prefilter":{"label":"UNKNOWN"}}')`;
+  }
+  await sql.unsafe(`CREATE FUNCTION refuse_prefilter_override() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN IF NEW.article_id = '${ids[1]}' THEN RAISE EXCEPTION 'refuse review'; END IF; RETURN NEW; END $$`);
+  await sql.unsafe("CREATE TRIGGER refuse_prefilter_override BEFORE INSERT ON editorial_overrides FOR EACH ROW EXECUTE FUNCTION refuse_prefilter_override()");
+  try {
+    const preview = await app.inject({ method: "POST", url: "/api/admin/content/prefilter-pass/preview", headers, payload: { ids } });
+    const response = await app.inject({ method: "POST", url: "/api/admin/content/prefilter-pass", headers,
+      payload: { token: preview.json().token, reason: "人工核验" } });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual([response.json().succeeded, response.json().skipped, response.json().failed], [1, 0, 1]);
+    assert.equal((await contentChain(ids[0]!))!.article.processing_state, "new");
+    assert.equal((await contentChain(ids[1]!))!.override, null);
+    assert.equal((await contentChain(ids[1]!))!.article.processing_state, "blocked");
+    assert.equal((await sql`SELECT 1 FROM pgboss.job WHERE data->>'articleId'=${ids[1]!}`).length, 0);
+    assert.equal((await sql`SELECT 1 FROM audit_log WHERE subject=${`content:${ids[1]}`} AND action='content.prefilter-pass'`).length, 0);
+  } finally { await sql.unsafe("DROP TRIGGER refuse_prefilter_override ON editorial_overrides; DROP FUNCTION refuse_prefilter_override()"); }
+});
+
+test("UNKNOWN filtering paginates raw prefilter decisions and previews every matching page, not final unknown", async () => {
+  const headers = await adminHeaders();
+  for (let index = 0; index < 52; index++) {
+    const id = await article();
+    await sql`UPDATE articles SET title=${`paged-${T}`},processing_state='blocked' WHERE id=${id}`;
+    await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,output)
+      VALUES (${id},1,'model','block','{"prefilter":{"label":"UNKNOWN"}}')`;
+  }
+  const finalUnknown = await article();
+  await sql`UPDATE articles SET title=${`paged-${T}`},processing_state='analyzed' WHERE id=${finalUnknown}`;
+  await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,output)
+    VALUES (${finalUnknown},1,'model','unknown','{"prefilter":{"label":"PASS"},"writer":"none"}')`;
+  for (const [page, count] of [[1, 50], [2, 2]]) {
+    const response = await app.inject({ method: "GET", url: `/api/admin/content?q=paged-${T}&prefilter=UNKNOWN&page=${page}`, headers });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().rows.length, count);
+    assert.equal(response.json().total, 52);
+    assert.ok(!response.json().rows.some((row: { id: string }) => row.id === finalUnknown));
+  }
+  const preview = await app.inject({ method: "POST", url: "/api/admin/content/prefilter-pass/preview", headers, payload: { all: true, q: `paged-${T}` } });
+  assert.equal(preview.json().total, 52);
+  assert.equal(preview.json().eligible, 52);
+  const invalid = await app.inject({ method: "POST", url: "/api/admin/content/prefilter-pass", headers,
+    payload: { token: `${preview.json().token}x`, reason: "禁止篡改范围" } });
+  assert.equal(invalid.statusCode, 409);
 });
 
 test("concurrent source intake creates one source for the same feed", async () => {

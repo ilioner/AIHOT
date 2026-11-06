@@ -5,6 +5,8 @@
 // 用 scripts/eval-selection.ts 在你自己标注的样本上重跑一遍，再决定上线（见 docs/selection.md）。
 
 export const SELECTION = {
+  directorySources: { "catalog-360-topics": { category: "ai-tools" } } as Readonly<Record<string, { category: string }>>,
+  prefilterPassSources: ["weblist-aixzd-tools", "catalog-aihot-tip", "catalog-aibase", "catalog-360-topics", "catalog-360-student", "catalog-360-teacher"] as readonly string[],
   blockedTags: ["其他"] as readonly string[],
   /**
    * 信源分级 → 入选门槛（平均分）。分级在后台“信源”里给每个源设置：

@@ -22,6 +22,7 @@ import { DEFAULT_CATEGORIES } from "@aihot/contracts/taxonomy";
 import { updateCategories } from "@aihot/backend/admin/settings";
 import { publishArticle } from "@aihot/backend/publication/publish";
 import { exportMarkdown, loadItemDetail } from "@aihot/backend/publication/detail";
+import { applyPrefilterPass, previewPrefilterPass, setVisibility } from "@aihot/backend/admin/content";
 
 const T = tag();
 const SOURCE = `test-analyze-${T}`;
@@ -29,7 +30,8 @@ const X_SOURCE = `test-analyze-x-${T}`;
 
 interface Req { step: AnalysisStep; marker: string; user: string }
 const requests: Req[] = [];
-const MARKERS = ["CLEAR", "RESCUE", "LOW", "OFFTOPIC", "STOCK-QUOTE", "BARE", "VAGUE", "THIN", "SENSITIVE", "推文", "WORDY", "REFUSAL", "RENUMBER", "UNMENDED", "UNCLASSIFIED", "MIXED-TAGS", "FALLBACK-TAGS"];
+const MARKERS = ["SOURCEPOLICY", "SOURCEBLOCK", "SOURCEFAIL", "CLEAR", "RESCUE", "LOW", "OFFTOPIC", "STOCK-QUOTE", "BARE", "VAGUE", "MANUALUNKNOWN", "THIN", "SENSITIVE", "推文", "WORDY", "REFUSAL", "RENUMBER", "UNMENDED", "UNCLASSIFIED", "MIXED-TAGS", "FALLBACK-TAGS"];
+const DIRECT_SOURCES = ["weblist-aixzd-tools", "catalog-aihot-tip", "catalog-aibase", "catalog-360-student", "catalog-360-teacher"];
 // The scores sit a few points around the pack's T1 threshold and understand floor, so each case means
 // the same after a site recalibrates them: selected when the two add up to 2 × T1, written like a
 // selected item when they add up to more than 2 × FLOOR, translated otherwise.
@@ -52,7 +54,8 @@ const provider = await stub((_hit, req) => {
   const marker = MARKERS.find((m) => user.includes(m)) ?? "";
   requests.push({ step, marker, user });
   const answer = (content: unknown) => ({ id: `stub-${requests.length}`, model: "stub", choices: [{ message: { content: typeof content === "string" ? content : JSON.stringify(content) } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } });
-  if (step === "prefilter") return answer({ label: ["OFFTOPIC", "STOCK-QUOTE", "BARE"].includes(marker) ? "BLOCK" : marker === "VAGUE" ? "UNKNOWN" : "PASS", reason: "测试" });
+  if (step === "prefilter") return answer({ label: ["SOURCEBLOCK", "OFFTOPIC", "STOCK-QUOTE", "BARE"].includes(marker) ? "BLOCK" : ["SOURCEPOLICY", "VAGUE", "MANUALUNKNOWN"].includes(marker) ? "UNKNOWN" : "PASS", reason: "测试" });
+  if (step === "structure" && marker === "SOURCEFAIL") return new Reply(500, { error: { message: "structure unavailable" } });
   if (step === "score") return answer({ attentionScore: scoreAnswers[marker]!.shift() });
   // Copy with a word a site keeps from readers (added to the pack's list below), and its mended form: whole (WORDY),
   // refused by the provider, with a number changed, or with as many such words as before.
@@ -67,15 +70,18 @@ const provider = await stub((_hit, req) => {
     if (marker === "SENSITIVE") return new Reply(400, { contentFilter: [{ level: 1, role: "user" }], error: { code: "1301", message: "系统检测到输入或生成内容可能包含不安全或敏感内容" } });
     return answer({ itemType: "policy_release", authorRole: "principal", tags: ["政策文件", "校企合作", "产教融合", "不存在的标签"], editorialJudgment: `理由 ${marker}`, titleZh: `理解标题 ${marker}`, summaryZh: `理解摘要 ${marker}。第二句补充一个关键数字。` });
   }
-  if (step === "structure") return answer({ category: "policy", tags: marker === "UNCLASSIFIED" ? ["#其他"] : marker === "MIXED-TAGS" ? ["政策文件", "其他"] : marker === "FALLBACK-TAGS" ? [] : ["政策文件", "专业建设"], subjects: ["tencent", "unknown-co"], scope: "single", fact: { title: `事实 ${marker}`, subject: "某部委", action: "发布", object: "文件", occurredAt: null, evidence: "a ministry released a vocational education policy", conditions: [] } });
+  if (step === "structure") return answer({ category: "policy", tags: user.includes("MANUAL-BLOCK-TAGS") || marker === "UNCLASSIFIED" ? ["#其他"] : marker === "MIXED-TAGS" ? ["政策文件", "其他"] : marker === "FALLBACK-TAGS" ? [] : ["政策文件", "专业建设"], subjects: ["tencent", "unknown-co"], scope: "single", fact: { title: `事实 ${marker}`, subject: "某部委", action: "发布", object: "文件", occurredAt: null, evidence: "a ministry released a vocational education policy", conditions: [] } });
   return answer(`title_zh: 翻译标题 ${marker}\nsummary_zh: 翻译摘要 ${marker}。第二句补充影响。`);
 });
 pointModels(provider.url);
 
 before(async () => {
+  await sql`UPDATE budgets SET per_minute=1000 WHERE service IN ('zhipu','dashscope','deepseek')`;
   await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, next_fetch_at) VALUES
     (${SOURCE}, 'Test analyze source', 'rss', 'T1', 'editorial', '2100-01-01'),
     (${X_SOURCE}, 'Test X account', 'x_search', 'T1', 'editorial', '2100-01-01')`;
+  for (const id of DIRECT_SOURCES) await sql`INSERT INTO sources (id,name,kind,tier,participation_mode,next_fetch_at)
+    VALUES (${id},${id},'rss','T2','editorial','2100-01-01')`;
 });
 after(async () => {
   await provider.close();
@@ -94,6 +100,107 @@ const calls = (marker: string) => requests.filter((r) => r.marker === marker).ma
 const row = async (id: string) =>
   (await sql<{ selected: boolean; relevance: string; score: string | null; title_zh: string; reason_zh: string | null; category: string | null; tags: string[]; subjects: string[]; receipt_ids: string[]; output: Record<string, any> }[]>`
     SELECT selected, relevance, score, title_zh, reason_zh, category, tags, subjects, receipt_ids, output FROM analyses WHERE article_id = ${id} ORDER BY id DESC LIMIT 1`)[0]!;
+
+test("five prefilter-only source IDs bind public analysis to their source and revision", async () => {
+  for (const sourceId of DIRECT_SOURCES) {
+    const id = await article("SOURCEPOLICY", { sourceId, url: `https://example.com/${sourceId}-${T}`, title: `SOURCEPOLICY ${sourceId} ${T}` });
+    scoreAnswers.SOURCEPOLICY = [FLOOR + 1, FLOOR + 1];
+    const before = calls("SOURCEPOLICY").length;
+    assert.equal((await loadAnalyzeInput(id))!.source.id, sourceId);
+    const result = await analyzeArticle(id);
+    assert.equal(result!.output!.relevance, "pass");
+    assert.equal(result!.output!.selected, false);
+    assert.deepEqual(calls("SOURCEPOLICY").slice(before).sort(), ["score", "score", "structure", "understand"]);
+    const fresh = await row(id);
+    assert.equal(fresh.output.prefilter.label, "PASS");
+    assert.deepEqual(fresh.output.sourcePrefilter, { sourceId, revision: 1 });
+    await publishArticle(id);
+    assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${id}`)[0]!.visibility, "public");
+    await sql`UPDATE articles SET source_id=${SOURCE} WHERE id=${id}`;
+    await publishArticle(id);
+    assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${id}`)[0]!.visibility, "withdrawn");
+    await sql`UPDATE articles SET source_id=${sourceId},revision=2 WHERE id=${id}`;
+    await publishArticle(id);
+    assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${id}`)[0]!.visibility, "withdrawn");
+  }
+  const unapproved = await article("SOURCEPOLICY", { url: `https://example.com/unapproved-${T}` });
+  const before = calls("SOURCEPOLICY").length;
+  assert.equal((await analyzeArticle(unapproved))!.output!.relevance, "block");
+  assert.deepEqual(calls("SOURCEPOLICY").slice(before), ["prefilter"]);
+});
+
+test("source PASS preserves historical UNKNOWN/BLOCK and receipts without lifting downstream blocks or withdrawal", async () => {
+  for (const marker of ["SOURCEPOLICY", "SOURCEBLOCK"]) {
+    const id = await article(marker, { url: `https://example.com/old-${marker}-${T}` });
+    await analyzeArticle(id);
+    const original = (await sql`SELECT * FROM analyses WHERE article_id=${id} ORDER BY id DESC LIMIT 1`)[0]!;
+    const receipt = (await sql`SELECT * FROM receipts WHERE id=${original.receipt_ids[0]}`)[0]!;
+    await sql`UPDATE articles SET source_id='catalog-aihot-tip' WHERE id=${id}`;
+    await publishArticle(id);
+    await setVisibility(id, { visibility: "withdrawn", version: 0, reason: "保留人工下架" }, "reviewer");
+    scoreAnswers[marker] = [T1, T1];
+    const before = calls(marker).length;
+    assert.equal((await analyzeArticle(id))!.output!.relevance, "pass");
+    assert.ok(!calls(marker).slice(before).includes("prefilter"));
+    assert.deepEqual((await sql`SELECT * FROM analyses WHERE id=${original.id}`)[0], original);
+    assert.deepEqual((await sql`SELECT * FROM receipts WHERE id=${receipt.id}`)[0], receipt);
+    await publishArticle(id);
+    assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${id}`)[0]!.visibility, "withdrawn");
+  }
+  for (const mode of ["tags", "writer", "missing", "pending", "failure"]) {
+    const marker = mode === "failure" ? "SOURCEFAIL" : "SOURCEPOLICY";
+    const id = await article(marker, { sourceId: "catalog-aibase", url: `https://example.com/source-${mode}-${T}`,
+      bodyText: mode === "missing" || mode === "pending" ? null : mode === "writer" ? marker : `${marker} ${mode === "tags" ? "MANUAL-BLOCK-TAGS" : ""} ${LONG}`,
+      bodyStatus: mode === "pending" ? "pending" : "ok" });
+    scoreAnswers[marker] = mode === "writer" ? [FLOOR - 1, FLOOR - 1] : [T1, T1];
+    const before = calls(marker).length;
+    if (mode === "failure") await assert.rejects(analyzeArticle(id));
+    else {
+      const result = await analyzeArticle(id);
+      if (mode === "pending") assert.equal(result!.needsBody, true);
+      else assert.equal(result!.output!.relevance, mode === "tags" ? "block" : "unknown");
+    }
+    if (mode === "missing" || mode === "pending") assert.equal(calls(marker).length, before);
+    await publishArticle(id);
+    assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${id}`)[0]!.visibility, "withdrawn");
+  }
+});
+
+test("manual UNKNOWN review continues paid analysis but preserves original evidence, withdrawal and blocked tags", async () => {
+  for (const mode of ["public", "withdrawn", "tags", "writer"] as const) {
+    const id = await article("MANUALUNKNOWN", { url: `https://example.com/manual-${mode}-${T}`,
+      bodyText: mode === "writer" ? "MANUALUNKNOWN" : `MANUALUNKNOWN ${mode === "tags" ? "MANUAL-BLOCK-TAGS" : ""} ${LONG} ${tag()}` });
+    await analyzeArticle(id);
+    const original = await row(id);
+    assert.equal(original.output.prefilter.label, "UNKNOWN");
+    const originalReceipt = (await sql`SELECT * FROM receipts WHERE id=${Number(original.receipt_ids[0])}`)[0]!;
+    await publishArticle(id);
+    if (mode === "withdrawn") await setVisibility(id, { visibility: "withdrawn", version: 0, reason: "保留人工下架" }, "reviewer");
+    const preview = await previewPrefilterPass({ ids: [id] }, "reviewer");
+    const applied = await applyPrefilterPass({ token: preview.token, reason: "人工核对原文，确认实践相关" }, `manual-${mode}-${T}`, "reviewer");
+    assert.equal(applied.succeeded, 1);
+    assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${id}`)[0]!.visibility, "withdrawn");
+    scoreAnswers.MANUALUNKNOWN = mode === "writer" ? [FLOOR-1, FLOOR-1] : [T1, T1];
+    const before = calls("MANUALUNKNOWN").length;
+    const result = await analyzeArticle(id, { attemptTag: `manual-prefilter:manual-${mode}-${T}` });
+    assert.equal(result!.output!.relevance, mode === "tags" ? "block" : mode === "writer" ? "unknown" : "pass");
+    assert.deepEqual(calls("MANUALUNKNOWN").slice(before).sort(), mode === "writer" ? ["score", "score", "structure"] : ["score", "score", "structure", "understand"]);
+    const fresh = await row(id);
+    assert.equal(fresh.output.prefilter.label, "UNKNOWN");
+    assert.equal(fresh.output.manualPrefilter.revision, 1);
+    assert.ok(fresh.receipt_ids.includes(original.receipt_ids[0]!));
+    assert.deepEqual((await sql`SELECT * FROM receipts WHERE id=${Number(original.receipt_ids[0])}`)[0], originalReceipt);
+    await publishArticle(id);
+    assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${id}`)[0]!.visibility, mode === "public" ? "public" : "withdrawn");
+    await sql`UPDATE articles SET revision=2,processing_state='analyzed' WHERE id=${id}`;
+    await publishArticle(id);
+    assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${id}`)[0]!.visibility, "withdrawn");
+    const nextBefore = calls("MANUALUNKNOWN").length;
+    assert.equal((await analyzeArticle(id))!.output!.relevance, "block");
+    assert.equal((await row(id)).output.manualPrefilter, undefined);
+    assert.ok(calls("MANUALUNKNOWN").slice(nextBefore).every(step => step === "prefilter"), "a material revision invalidates manual authorization and stops downstream paid steps, even when the prefilter receipt is reused");
+  }
+});
 
 test("a selected item: prefilter, two scores, the content understanding and the structure", async () => {
   assert.ok(FLOOR >= 4 && FLOOR < T1 && T1 <= 97, "the cases need the understand floor below the T1 threshold, and a few points either side");

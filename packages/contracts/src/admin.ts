@@ -157,6 +157,10 @@ export interface AdminSourcePreview {
 // Content and events
 
 export interface AdminContentRow {
+  prefilter_label?: string | null;
+  prefilter_reason?: string | null;
+  manual_prefilter?: boolean;
+  reviewable?: boolean;
   status_reason?: string;
   id: string;
   title: string;
@@ -171,6 +175,22 @@ export interface AdminContentRow {
 
 export interface AdminContentSearch {
   rows: AdminContentRow[];
+  total?: number;
+  page?: number;
+}
+
+export interface AdminPrefilterPreview {
+  token: string;
+  total: number;
+  eligible: number;
+  rows: Array<{ id: string; title: string; reason: string | null }>;
+}
+
+export interface AdminPrefilterResult {
+  succeeded: number;
+  skipped: number;
+  failed: number;
+  rows: Array<{ id: string; status: "succeeded" | "skipped" | "failed"; reason: string | null }>;
 }
 
 /** The publications row of an item, as the publish step wrote it. */
@@ -225,6 +245,7 @@ export interface AdminContentChain {
   discoveries: Array<{ source_id: string; via: string; discovered_at: Timestamp }>;
   revisions: Array<{ revision: number; title: string; content_hash: string | null; created_at: Timestamp }>;
   analyses: Array<{
+    prefilter_label?: string | null; prefilter_reason?: string | null; manual_prefilter?: boolean;
     id: number; origin: string; model: string | null; prompt_version: string | null; input_revision: number; relevance: string | null; category: string | null;
     score: number | null; selected: boolean | null; title_zh: string | null; reason_zh: string | null; created_at: Timestamp;
     receipts: Array<{ id: number; status: string; service: string; model: string | null; cost: number | null; at: Timestamp }>;

@@ -9,11 +9,12 @@ import { textToHtml } from "../content/sanitize.ts";
 import { exportTranslation, isChineseBody, ITEM_COLUMNS, ITEM_FROM, seatHolders, showsPost, toItemSummary, xView, type ItemRow } from "./items.ts";
 import { evidenceCondition, listedCondition } from "./scope.ts";
 import { itemUrl, siteUrl } from "./links.ts";
-import { hasItemPage, publicSourceName } from "./rules.ts";
+import { directoryPolicy, hasItemPage, publicSourceName } from "./rules.ts";
 import { topicLinks, topicMembership } from "./topics.ts";
 import { loadCategories } from "./categories.ts";
 
 interface DetailRow extends ItemRow {
+  source_id: string;
   body_html: string | null;
   body_text: string | null;
   body_status: string;
@@ -42,7 +43,7 @@ function withOutline(html: string): { html: string; outline: OutlineEntry[] } {
 
 async function loadRow(id: string): Promise<DetailRow | null> {
   const [row] = await sql<DetailRow[]>`
-    SELECT ${ITEM_COLUMNS}, a.body_html, a.body_text, a.body_status, tr.body_html AS tr_html, tr.complete AS tr_complete,
+    SELECT ${ITEM_COLUMNS}, a.source_id, a.body_html, a.body_text, a.body_status, tr.body_html AS tr_html, tr.complete AS tr_complete,
       ${topicMembership()} AS topics
     ${ITEM_FROM}
     WHERE p.article_id = ${id}`;
@@ -171,13 +172,13 @@ export async function loadItemDetail(id: string, language: "zh" | "original" = "
 
 /**
  * Same predicate for the export button and the export route: a public page with something to export
- * (a summary, the post where pages show it, or a full-text body).
+ * (a summary, the post where pages show it, or a full-text body); approved directories also export their title and link.
  */
 export function markdownAvailable(row: {
-  visibility: string; source_mode: string; summary: string | null; body_mode: string; body_html?: string | null; channel: string; x_post: Record<string, any> | null;
+  visibility: string; source_mode: string; source_id?: string; summary: string | null; body_mode: string; body_html?: string | null; channel: string; x_post: Record<string, any> | null;
 }): boolean {
   if (row.visibility !== "public" || !hasItemPage({ visibility: row.visibility, sourceMode: row.source_mode })) return false;
-  return !!row.summary || (showsPost(row) && (!!row.x_post?.text || !!row.x_post?.media?.length || !!row.x_post?.quoted?.text)) || (row.body_mode === "full" && !!row.body_html);
+  return !!directoryPolicy(row.source_id ?? "", row.source_mode) || !!row.summary || (showsPost(row) && (!!row.x_post?.text || !!row.x_post?.media?.length || !!row.x_post?.quoted?.text)) || (row.body_mode === "full" && !!row.body_html);
 }
 
 export async function exportMarkdown(id: string): Promise<{ filename: string; body: string } | null> {

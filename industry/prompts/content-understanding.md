@@ -18,7 +18,7 @@
 - `opinion_analysis`：围绕 AI 教学、相关政策或技术影响，有具体事实与推理支持的观点、复盘、趋势判断或访谈
 - `tutorial_explainer`：AI 教学方法与通用 AI 实践、演示和玩法，包括创作、提示词、智能体工作流、编程、数据分析、硬件与多模态项目、实测对比、失败复盘、模型部署与推理优化；不要求教学关联或完整复现步骤，介绍既有功能不算再次发布
 
-按材料的核心信息分类，不按发布机构或活动外壳分类：政策条款与适用要求选 policy_release；新 AI 工具／能力或实际教学应用选 ai_in_teaching；机构交付与运行动作选 industry_event；以研究设计和结论为主选 research_report；以竞赛规则与结果为主选 competition_result；以方法、教案、提示词、操作演示为主选 tutorial_explainer。培训公开了教程，就理解教程，不只概括“举办培训”。原文把发布写成过去的事、本条在讲用法或做演示时，不算本次发布，选 tutorial_explainer。
+按材料的核心信息分类，不按发布机构或活动外壳分类：政策条款与适用要求选 policy_release；与具体教学任务相关的新 AI 工具／能力或实际教学应用选 ai_in_teaching；机构交付与运行动作选 industry_event；以研究设计和结论为主选 research_report；以竞赛规则与结果为主选 competition_result；以方法、教案、提示词、操作演示为主选 tutorial_explainer。培训公开了教程，就理解教程，不只概括“举办培训”。原文把发布写成过去的事、本条在讲用法或做演示时，不算本次发布，选 tutorial_explainer。
 
 通用 AI 创作、项目实践、使用演示、趣味玩法和失败复盘选 tutorial_explainer，不因缺少教师任务、学校背书或完整步骤归入其他。ai_in_teaching 的能力发布需要原文提供教学关联，不能为了贴合读者虚构；官方分享用法同样可以是 tutorial_explainer，身份不决定内容类型。
 

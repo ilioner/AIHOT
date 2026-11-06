@@ -34,6 +34,8 @@ import { CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, hasBlockedTag, ITEM_TYPES, normal
 import { promptText, promptVersion } from "./prompts.ts";
 import { originalPostCopy } from "../content/posts.ts";
 import { wordingProblems } from "./wording.ts";
+import { loadManualPrefilter, prefilterPassed, type ManualPrefilterPass } from "./manual-prefilter.ts";
+import { sourcePrefilterPass, type SourcePrefilterPass } from "./source-prefilter.ts";
 
 export { buildMaterial, loadAnalyzeInput, type AnalyzeInputArticle };
 
@@ -198,8 +200,10 @@ export function normalizeStructure(data: z.infer<typeof StructureSchema>, a: Ana
 }
 
 export interface AnalysisRun {
+  sourcePrefilter?: SourcePrefilterPass;
+  manualPrefilter?: ManualPrefilterPass;
   /** Absent when there is nothing to judge yet: only a title, and no displayable original post. */
-  prefilter: { label: "PASS" | "BLOCK" | "UNKNOWN"; reason: string; model: string; receiptId: number; reused: boolean } | null;
+  prefilter: { label: "PASS" | "BLOCK" | "UNKNOWN"; reason: string; model: string; receiptId: number | null; reused: boolean } | null;
   /**
    * The independent score calls and the tier threshold they are held against; absent when the material
    * is not scored. `refused`: the model's content filter declined it, so it is not selected.
@@ -230,6 +234,7 @@ export function waitsForPage(a: AnalyzeInputArticle): boolean {
 }
 
 type StepOpts = { attemptTag?: string; scoreModel?: string };
+type AnalysisOpts = StepOpts & { manualPrefilter?: NonNullable<Awaited<ReturnType<typeof loadManualPrefilter>>> };
 type ReceiptObserver = (receiptId: number) => void;
 
 /** A stopping worker finishes the stage it is in, never starts the next. */
@@ -266,9 +271,10 @@ export async function runSelectionPrefilter(
   opts: StepOpts = {},
   onReceipt?: ReceiptObserver,
 ): Promise<NonNullable<AnalysisRun["prefilter"]>> {
+  if (sourcePrefilterPass(a.source.id, a.revision)) return { label: "PASS", reason: "来源策略预筛直通；后续分析和发布检查仍保留", model: "source-policy", receiptId: null, reused: true };
   try {
     const result = await runPrefilter(a, opts);
-    onReceipt?.(result.receiptId);
+    if (result.receiptId !== null) onReceipt?.(result.receiptId);
     return result;
   } catch (error) {
     const receiptId = failedReceiptId(error);
@@ -494,16 +500,19 @@ export function scoresSelect(scores: AnalysisRun["scores"], threshold = scores?.
 }
 
 /** Runs the steps on the material as it is (or reuses their receipts) without writing business results. */
-export async function runAnalysis(a: AnalyzeInputArticle, opts: StepOpts = {}): Promise<AnalysisRun> {
+export async function runAnalysis(a: AnalyzeInputArticle, opts: AnalysisOpts = {}): Promise<AnalysisRun> {
   checkAnalysisRunning();
   // Missing article text waits for a later revision, before any paid step; displayable original posts keep their judgement.
   if (awaitsMaterial(a)) return { prefilter: null, scores: null, writing: null, structure: null };
   const categories = await loadCategories();
-  const prefilter = await runSelectionPrefilter(a, opts);
-  if (prefilter.label !== "PASS") return { prefilter, scores: null, writing: null, structure: null };
+  const sourcePrefilter = sourcePrefilterPass(a.source.id, a.revision);
+  const manualPrefilter = !sourcePrefilter && opts.manualPrefilter?.approval.revision === a.revision ? opts.manualPrefilter : null;
+  const prefilter = manualPrefilter?.prefilter ?? await runSelectionPrefilter(a, opts);
+  const approval = sourcePrefilter ? { sourcePrefilter } : manualPrefilter ? { manualPrefilter: manualPrefilter.approval } : {};
+  if (!prefilterPassed({ prefilter, ...approval }, approval, a.revision, a.source.id)) return { prefilter, scores: null, writing: null, structure: null };
   if (a.sourceMetadata?.documentUrl && missingEvidence(a)) {
     const structure = await runStructure(a, opts, categories);
-    return { prefilter, scores: null, structure, writing: { kind: "document", model: null,
+    return { prefilter, ...approval, scores: null, structure, writing: { kind: "document", model: null,
       titleZh: a.title, summaryZh: "", notesZh: "", reasonZh: null, receiptIds: [], reused: true } };
   }
   const original = originalPostCopy(a.xPost, a.url);
@@ -518,7 +527,7 @@ export async function runAnalysis(a: AnalyzeInputArticle, opts: StepOpts = {}): 
     const writing: NonNullable<AnalysisRun["writing"]> = original
       ? { kind: "verbatim", model: null, titleZh: original.title, summaryZh: original.summary ?? "", notesZh: "", reasonZh: null, receiptIds: [], reused: true }
       : await mendWording(a, (near ? await runUnderstand(a, opts) : null) ?? (await runSummarize(a, opts)), opts);
-    return { prefilter, scores, writing, structure: s.value };
+    return { prefilter, ...approval, scores, writing, structure: s.value };
   } finally {
     // A score/writing error or deploy must not let the job finish while a paid structure request
     // still owns a response. It settles and stores its receipt before shutdown can close the DB.
@@ -528,7 +537,7 @@ export async function runAnalysis(a: AnalyzeInputArticle, opts: StepOpts = {}): 
 
 /** One judgement from the steps: the selection rule, the reader-facing copy and the structure. */
 export function normalizeAnalysis(run: AnalysisRun) {
-  const label = run.prefilter?.label;
+  const label = run.prefilter?.label === "UNKNOWN" && run.manualPrefilter ? "PASS" : run.prefilter?.label;
   const titleZh = collapseWhitespace(run.writing?.titleZh ?? "");
   const summaryZh = (run.writing?.summaryZh ?? "").trim();
   // Original posts can consist entirely of media. Model-written copy still needs a title and summary.
@@ -583,15 +592,18 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
   if (!input) return null;
   // Its page first; extraction queues the analysis again (normally the queue already routed it there).
   if (waitsForPage(input)) return { analysisId: null, stale: false, needsBody: true, output: null, receiptIds: [], reused: true };
-  const run = await runAnalysis(input, opts);
+  const manualPrefilter = await loadManualPrefilter(articleId, input.revision);
+  const run = await runAnalysis(input, { ...opts, ...(manualPrefilter ? { manualPrefilter } : {}) });
   const out = normalizeAnalysis(run);
   const receiptIds = [
-    ...(run.prefilter ? [run.prefilter.receiptId] : []), ...(run.scores?.receiptIds ?? []), ...(run.writing?.receiptIds ?? []),
+    ...(run.prefilter?.receiptId != null ? [run.prefilter.receiptId] : []), ...(run.scores?.receiptIds ?? []), ...(run.writing?.receiptIds ?? []),
     ...(run.structure ? [run.structure.receiptId] : []),
   ];
   const w = run.writing;
   const detail = {
     prefilter: run.prefilter && { label: run.prefilter.label, reason: run.prefilter.reason },
+    ...(run.sourcePrefilter ? { sourcePrefilter: run.sourcePrefilter } : {}),
+    ...(run.manualPrefilter ? { manualPrefilter: run.manualPrefilter } : {}),
     scores: out.scores, scoreModel: out.scoreModel, threshold: out.threshold, ...(out.scoreRefused ? { scoreRefused: true } : {}),
     ...(w ? { writer: w.kind, writerModel: w.model, itemType: w.itemType ?? null, authorRole: w.authorRole ?? null } : {}),
     ...(w?.identityGuard?.outcome === "fallback" ? { identityGuard: w.identityGuard } : {}),
@@ -607,7 +619,10 @@ export async function analyzeArticle(articleId: string, opts: StepOpts = {}): Pr
         ${out.relevance}, ${out.category}, ${out.tags}, ${out.subjects}, ${out.titleZh}, ${out.summaryZh}, ${out.notesZh}, ${out.reasonZh},
         ${out.score}, ${out.selected}, ${tx.json(detail as never)})
       RETURNING id`;
-    for (const id of receiptIds) await completeReceipt(tx, id);
+    for (const id of receiptIds) {
+      if (run.manualPrefilter && id === run.prefilter?.receiptId) continue;
+      await completeReceipt(tx, id);
+    }
     if (!stale) {
       await tx`UPDATE articles SET processing_state = ${out.relevance === "block" ? "blocked" : "analyzed"}, processing_error = NULL WHERE id = ${articleId}`;
     }

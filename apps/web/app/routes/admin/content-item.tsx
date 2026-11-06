@@ -5,6 +5,7 @@ import type { Route } from "./+types/content-item";
 import type { AdminContentChain, AdminPresentationRefresh } from "@aihot/contracts/admin";
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
+import { PrefilterReview } from "../../features/admin/prefilter-review";
 import { bj, money } from "../../features/admin/format";
 import { KIND_LABEL, MODE_LABEL, VISIBILITY_LABEL, PROCESSING_LABEL } from "../../features/admin/labels";
 import { AdminPage, Badge, Button, Card, Empty, Field, Input, Json, KV, ReasonDialog, Select, Textarea } from "../../features/admin/ui";
@@ -85,9 +86,11 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
       }
       actions={
         <>
-          <Button onClick={() => setDialog("visibility")}>公开范围</Button>
+          <Button onClick={() => { setVisibility(p?.visibility ?? "public"); setDialog("visibility"); }}>公开范围</Button>
           {p && <Button onClick={() => setDialog("seo")}>{p.indexable ? "取消收录" : "标记收录"}</Button>}
           <Button onClick={openOverride}>人工修正</Button>
+          {c.analyses.find(an => an.input_revision === a.revision)?.prefilter_label === "UNKNOWN" &&
+            <PrefilterReview scope={{ ids: [a.id] }} disabled={a.processing_state === "new" || (c.override?.fields.manualPrefilter as { revision?: number } | undefined)?.revision === a.revision} />}
           <Button onClick={() => { setPresentation(null); setDialog("presentation"); }}>刷新正文展示</Button>
           <Button onClick={() => setDialog("analyze")}>重新评估</Button>
         </>
@@ -100,6 +103,8 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
         {a.backfill && <Badge tone="warn">历史回灌</Badge>}
         <Badge>{PROCESSING_LABEL[a.processing_state] ?? a.processing_state}</Badge>
         {c.override && <Badge tone="info" title={c.override.reason ?? undefined}>有人工设置 v{c.override.version}</Badge>}
+        {(c.override?.fields.manualPrefilter as { revision?: number } | undefined)?.revision === a.revision &&
+          <Badge tone="info">人工预筛 PASS{a.processing_state === "new" ? " · 等待后续分析" : " · 原始 UNKNOWN 保留"}</Badge>}
       </div>
       {a.processing_error && <div className="mb-5 rounded-card bg-hot-soft px-4 py-3 text-[13px] text-hot ring-1 ring-hot/20">{a.processing_error}</div>}
       <Card title="源站原始信息" className="mb-5">
@@ -160,12 +165,15 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
                     <div key={an.id} className="rounded-control bg-bg-sunk/60 p-3 ring-1 ring-line">
                       <div className="flex flex-wrap items-center gap-1.5 text-[12px]">
                         <Badge tone={an.relevance === "pass" ? "ok" : "muted"}>{an.relevance}</Badge>
+                        {an.prefilter_label && <Badge tone={an.prefilter_label === "PASS" ? "ok" : "warn"}>原始预筛 {an.prefilter_label}</Badge>}
+                        {an.manual_prefilter && <Badge tone="info">人工预筛 PASS</Badge>}
                         {an.selected && <Badge tone="accent">入选</Badge>}
                         <Badge tone="info">分数 {an.score}</Badge>
                         {an.category && <Badge>{categoryLabel(an.category)}</Badge>}
                         <span className="text-ink-4">{an.model} · {an.prompt_version} · 输入 v{an.input_revision} · {an.origin} · {bj(an.created_at)}</span>
                       </div>
                       {an.title_zh && <div className="mt-2 font-medium text-ink">{an.title_zh}</div>}
+                      {an.prefilter_label && <div className="mt-1 text-[12px] text-ink-3">预筛依据：{an.prefilter_reason || "模型未提供具体理由；UNKNOWN 表示无法确定，不等同于已确认违规。"}</div>}
                       {an.reason_zh && <div className="mt-1 text-[12.5px] leading-relaxed text-ink-3">{an.reason_zh}</div>}
                       {an.receipts.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5 text-[11.5px]">
@@ -309,7 +317,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
         description={
           p?.indexable
             ? "详情页改回 noindex 并移出站点地图；即使是精选，也不再自动收录，直到重新标记。"
-            : "详情页默认 noindex，精选内容自动收录。标记后（仅在公开状态下）改为 index、进入站点地图，并在下一次 IndexNow 提交。适合有独立价值、摘要与正文完整的内容。"
+            : "这是本站搜索引擎索引许可，不是内容入库或模型通过标记。仅已公开且有有效摘要的详情页可标记，随后进入站点地图；搜索引擎是否实际收录由其决定。UNKNOWN、BLOCK、下架内容不能靠此操作公开。"
         }
         confirmLabel={p?.indexable ? "取消收录" : "标记收录"}
         busy={pending === "seo"}
@@ -320,7 +328,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
       <ReasonDialog
         open={dialog === "visibility"}
         title="公开范围"
-        description="改动会同时作用于网页、API、RSS、MCP、同步流和搜索索引，并刷新缓存。来源方要求下架时，先核实身份与范围。"
+        description="改动同时作用于全部公开出口。只有当前版本预筛和分析通过、未命中拦截规则的内容才能公开或仅摘要。UNKNOWN 可通过专用人工预筛审核继续分析，公开范围设置本身不能放行预筛；BLOCK 不可绕过。下架不受此限制。"
         danger={visibility === "withdrawn"}
         confirmLabel="应用"
         busy={pending === "visibility"}
@@ -345,7 +353,7 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
       <ReasonDialog
         open={dialog === "override"}
         title="人工修正"
-        description="人工值优先于模型输出，之后的重处理不会覆盖；留空表示不修正该字段（清除已有修正请选“清除”）。"
+        description="标题、摘要、分类等人工值会保存并优先于模型输出，但不会把 UNKNOWN／BLOCK 改成通过，也不会解除人工下架。强制入选仍须满足发布与归组条件；留空会清除该字段已有修正。"
         confirmLabel="保存修正"
         busy={pending === "override"}
         onClose={() => setDialog(null)}
@@ -364,10 +372,17 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
           else if (fields.scoreMode === "value") next.score = Number(fields.score);
           else if (c.override?.fields.score !== undefined) clear.push("score");
           for (const k of ["selected", "silent"] as const) {
-            if (fields[k] === "true" || fields[k] === "false") next[k] = fields[k] === "true";
-            else if (c.override?.fields[k] !== undefined) clear.push(k);
+            if (fields[k] === "true" || fields[k] === "false") {
+              const value = fields[k] === "true";
+              if (value !== c.override?.fields[k]) next[k] = value;
+            } else if (c.override?.fields[k] !== undefined) clear.push(k);
           }
-          return (await run("POST", `${base}/override`, { fields: next, clear, reason, version }, { label: "override", success: "修正已保存并重新发布" })) !== null;
+          return (await run<{ visibility: string; selected: boolean }>("POST", `${base}/override`, { fields: next, clear, reason, version }, {
+            label: "override",
+            success: (result) => result.visibility === "withdrawn" ? "修正已保存，内容仍未公开；人工修正不绕过发布门禁"
+              : next.selected === true && !result.selected ? "修正已保存，尚未进入精选；等待归组条件满足"
+              : "修正已保存并更新公开内容",
+          })) !== null;
         }}
       >
         <Field label="标题"><Input value={fields.title} placeholder={p?.title ?? ""} onChange={(e) => setFields({ ...fields, title: e.target.value })} /></Field>

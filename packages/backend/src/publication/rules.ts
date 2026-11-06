@@ -1,5 +1,10 @@
 // Publication rules. Each rule is defined once here and used by every exit.
 import { serverModules } from '../modules.ts';
+import { SELECTION } from '@aihot/industry/selection';
+
+export function directoryPolicy(sourceId: string, participationMode: string): { category: string } | null {
+  return participationMode === 'editorial' && Object.hasOwn(SELECTION.directorySources, sourceId) ? SELECTION.directorySources[sourceId]! : null;
+}
 
 /** Presentation exceptions never alter scoring, selection eligibility or fact membership. */
 export function independentSelectedSources(): string[] {

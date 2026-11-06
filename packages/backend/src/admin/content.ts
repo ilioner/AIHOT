@@ -3,12 +3,15 @@
 // ledger → grouping → deliveries. Visibility changes and manual corrections go through editorial
 // overrides with a version check, are re-projected to every public exit, and are audited.
 import { z } from "zod";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import type { AdminPrefilterPreview, AdminPrefilterResult } from "@aihot/contracts/admin";
+import { manualPrefilterPass, type ManualPrefilterPass } from "../editorial/manual-prefilter.ts";
 import { correctReportClassification } from "../reports/correct.ts";
 import type { AdminContentChain, AdminContentRow, AdminPublication, AdminPresentationRefresh, AdminRerun, BeforeJson } from "@aihot/contracts/admin";
 import { ARTICLE_ID_PATTERN } from "@aihot/contracts/taxonomy";
 import { loadCategories } from "../taxonomy.ts";
 import { sql, type Db, type Tx } from "../db.ts";
-import { enqueue, QUEUES } from "../jobs/queue.ts";
+import { enqueue, getBoss, QUEUES } from "../jobs/queue.ts";
 import { needsGrouping, queueProcessing } from "../jobs/content.ts";
 import { identityKeyForUrl, normalizeUrl } from "../lib/url.ts";
 import { publishArticleTx, setSeoDecision } from "../publication/publish.ts";
@@ -26,6 +29,7 @@ import { audit, auditHistory, Conflict } from "../audit.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
 import { contentStatus } from "./content-status.ts";
 import { sourceMetadata } from "@aihot/contracts/source-metadata";
+import { credential } from "../config.ts";
 
 interface PublicationDateMaterial {
   id: string;
@@ -178,22 +182,139 @@ export async function correctPublicationDate(id: string, input: { version: numbe
   });
 }
 
-export async function searchContent(q: string): Promise<BeforeJson<AdminContentRow>[]> {
-  const term = q.trim();
-  if (!term) return [];
-  const read = (where: ReturnType<typeof sql>) => sql<BeforeJson<AdminContentRow>[]>`
-    SELECT a.id, coalesce(p.title, a.title) AS title, a.url, s.name AS source, a.discovered_at, a.processing_state,
-           p.visibility, p.selected, p.score, ${contentStatus()} AS status_reason
-    FROM articles a JOIN sources s ON s.id = a.source_id LEFT JOIN publications p ON p.article_id = a.id
-    WHERE ${where} ORDER BY a.discovered_at DESC, a.id LIMIT 50`;
-  // Exact lookups use the identity indexes; a title search must not force a full-table join for an ID.
+async function contentFilter(query: string) {
+  const term = query.trim();
+  if (!term) return { where: sql`true` };
   if (ARTICLE_ID_PATTERN.test(term)) {
-    const found = await read(sql`a.id = ${term}`);
-    if (found.length) return found;
+    const [found] = await sql`SELECT id FROM articles WHERE id=${term}`;
+    if (found) return { where: sql`a.id=${term}` };
   }
   const url = /^https?:\/\//i.test(term) ? normalizeUrl(term) : null;
-  if (url) return read(sql`a.url IN (${term}, ${url}) OR a.identity_key IN (${identityKeyForUrl(term)}, ${identityKeyForUrl(term, { keepFragment: true })})`);
-  return read(sql`a.title ILIKE ${`%${term}%`} OR p.title ILIKE ${`%${term}%`}`);
+  if (url) return { where: sql`a.url IN (${term}, ${url}) OR a.identity_key IN (${identityKeyForUrl(term)}, ${identityKeyForUrl(term, { keepFragment: true })})` };
+  return { where: sql`a.title ILIKE ${`%${term}%`} OR p.title ILIKE ${`%${term}%`}` };
+}
+
+const contentJoins = () => sql`FROM articles a JOIN sources s ON s.id=a.source_id LEFT JOIN publications p ON p.article_id=a.id
+  LEFT JOIN editorial_overrides e ON e.article_id=a.id
+  LEFT JOIN LATERAL (SELECT * FROM analyses WHERE article_id=a.id AND input_revision=a.revision ORDER BY id DESC LIMIT 1) an ON true`;
+
+export async function listContent(input: { q?: string; prefilter?: string; page?: string }) {
+  const filters = z.object({ q: z.string().max(1000).default(""), prefilter: z.enum(["", "UNKNOWN", "BLOCK", "PASS"]).default(""),
+    page: z.coerce.number().int().min(1).max(100000).default(1) }).parse(input);
+  if (!filters.q.trim() && !filters.prefilter) return { rows: [], total: 0, page: filters.page };
+  const { where: queryWhere } = await contentFilter(filters.q);
+  const where = sql`(${queryWhere}) AND (${filters.prefilter}='' OR an.output->'prefilter'->>'label'=${filters.prefilter})`;
+  const rows = await sql<BeforeJson<AdminContentRow>[]>`SELECT a.id, coalesce(p.title,a.title) AS title,a.url,s.name AS source,
+    a.discovered_at,a.processing_state,p.visibility,p.selected,p.score,${contentStatus()} AS status_reason,
+    an.output->'prefilter'->>'label' AS prefilter_label,an.output->'prefilter'->>'reason' AS prefilter_reason,
+    coalesce(e.fields->'manualPrefilter'->>'revision'=a.revision::text,false) AS manual_prefilter,
+    coalesce(an.origin='model' AND an.output->'prefilter'->>'label'='UNKNOWN' AND a.processing_state IN ('blocked','analyzed','failed')
+      AND s.participation_mode='editorial' AND coalesce(e.fields->'manualPrefilter'->>'revision','')<>a.revision::text,false) AS reviewable
+    ${contentJoins()} WHERE ${where} ORDER BY a.discovered_at DESC,a.id LIMIT 50 OFFSET ${(filters.page-1)*50}`;
+  const [count] = await sql<{ total: number }[]>`SELECT count(*)::int AS total ${contentJoins()} WHERE ${where}`;
+  return { rows, total: count!.total, page: filters.page };
+}
+
+export async function searchContent(q: string): Promise<BeforeJson<AdminContentRow>[]> {
+  return (await listContent({ q })).rows;
+}
+
+interface PrefilterSnapshot {
+  id: string; title: string; revision: number; analysis_id: number | null; label: string | null; origin: string | null;
+  processing_state: string; processing_attempt_tag: string | null; version: number; fields: Record<string, unknown>; participation_mode: string; active: boolean;
+}
+
+async function prefilterSnapshots(where: Awaited<ReturnType<typeof contentFilter>>["where"], db: Db = sql) {
+  return db<PrefilterSnapshot[]>`SELECT a.id,coalesce(p.title,a.title) AS title,a.revision,an.id AS analysis_id,
+    an.output->'prefilter'->>'label' AS label,an.origin,a.processing_state,a.processing_attempt_tag,
+    coalesce(e.version,0) AS version,coalesce(e.fields,'{}'::jsonb) AS fields,s.participation_mode,
+    EXISTS(SELECT 1 FROM pgboss.job j WHERE j.state IN ('created','retry','active') AND j.name IN ('content.analyze','content.extract-body') AND j.data->>'articleId'=a.id) AS active
+    ${contentJoins()} WHERE ${where} ORDER BY a.id LIMIT 1001`;
+}
+
+function prefilterSkip(row: PrefilterSnapshot) {
+  if (row.label !== "UNKNOWN" || row.origin !== "model") return "当前版本不是模型预筛 UNKNOWN";
+  if (row.participation_mode !== "editorial") return "信源不参与编辑分析";
+  if (row.active || !["blocked", "analyzed", "failed"].includes(row.processing_state)) return "正在处理或等待处理";
+  if (manualPrefilterPass(row.fields.manualPrefilter, row.revision)) return "当前版本已经人工预筛通过";
+  return null;
+}
+
+function prefilterSnapshotHash(row: PrefilterSnapshot) {
+  return sha256(stableJson({ revision: row.revision, analysisId: row.analysis_id, version: row.version,
+    state: row.processing_state, attemptTag: row.processing_attempt_tag, label: row.label }));
+}
+
+const PrefilterTokenSchema = z.object({ actor: z.string(), items: z.array(z.object({ id: z.string(), hash: z.string() })).max(1000) });
+
+function prefilterSignature(value: string) {
+  const secret = credential("auth", "SESSION_SECRET");
+  if (!secret) throw new Error("SESSION_SECRET is required for review previews");
+  return createHmac("sha256", secret).update(`manual-prefilter-v1:${value}`).digest("base64url");
+}
+
+export async function previewPrefilterPass(input: unknown, actor: string): Promise<AdminPrefilterPreview> {
+  const scope = z.object({ q: z.string().max(1000).default(""), all: z.boolean().default(false), ids: z.array(z.string().min(1).max(100)).min(1).max(1000).optional() }).strict().parse(input);
+  if (scope.all === !!scope.ids) throw new Conflict("请选择具体条目或全部匹配范围");
+  await getBoss();
+  const where = scope.all ? sql`(${(await contentFilter(scope.q)).where}) AND an.output->'prefilter'->>'label'='UNKNOWN'` : sql`a.id IN ${sql(scope.ids!)}`;
+  const rows = await prefilterSnapshots(where);
+  if (rows.length > 1000) throw new Conflict("匹配超过 1000 条，请用关键词缩小范围后分批审核");
+  const value = Buffer.from(JSON.stringify({ actor, items: rows.map(row => ({ id: row.id, hash: prefilterSnapshotHash(row) })) })).toString("base64url");
+  return { token: `${value}.${prefilterSignature(value)}`, total: rows.length, eligible: rows.filter(row => !prefilterSkip(row)).length,
+    rows: rows.map(row => ({ id: row.id, title: row.title, reason: prefilterSkip(row) })) };
+}
+
+export async function applyPrefilterPass(input: unknown, requestId: string, actor: string): Promise<AdminPrefilterResult> {
+  const command = z.object({ token: z.string().max(300000), reason: z.string().trim().min(1).max(2000) }).strict().parse(input);
+  z.string().regex(/^[\w-]{8,80}$/).parse(requestId);
+  const [value, signature, extra] = command.token.split(".");
+  const expected = Buffer.from(prefilterSignature(value ?? "")), given = Buffer.from(signature ?? "");
+  if (extra || !value || given.length !== expected.length || !timingSafeEqual(given, expected)) throw new Conflict("预览签名无效，请重新预览");
+  const snapshot = PrefilterTokenSchema.parse(JSON.parse(Buffer.from(value, "base64url").toString()));
+  if (snapshot.actor !== actor) throw new Conflict("只能提交本人核对的预览");
+  await getBoss();
+  const subject = `prefilter-batch:${sha256(`${actor}:${requestId}`)}`;
+  const fingerprint = sha256(stableJson(command));
+  return sql.begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${subject}))`;
+    const [prior] = await tx<{ after: { fingerprint: string; result: AdminPrefilterResult } }[]>`SELECT after FROM audit_log
+      WHERE subject=${subject} AND action='content.prefilter.batch' AND actor=${actor} AND request_id=${requestId} ORDER BY id DESC LIMIT 1`;
+    if (prior) {
+      if (prior.after.fingerprint !== fingerprint) throw new Conflict("同一请求不能更改审核范围或理由");
+      return prior.after.result;
+    }
+    const result: AdminPrefilterResult = { succeeded: 0, skipped: 0, failed: 0, rows: [] };
+    for (const item of snapshot.items) {
+      try {
+        const outcome = await tx.savepoint(async db => {
+          await db`SELECT id FROM articles WHERE id=${item.id} FOR UPDATE`;
+          const [row] = await prefilterSnapshots(sql`a.id=${item.id}`, db);
+          const reason = !row ? "内容已删除" : prefilterSkip(row) ?? (prefilterSnapshotHash(row) !== item.hash ? "预览后材料或人工设置已变化" : null);
+          if (!row || reason) return { id: item.id, status: "skipped" as const, reason };
+          const approval: ManualPrefilterPass = { revision: row.revision, analysisId: row.analysis_id!, requestId, actor, reason: command.reason };
+          const fields = { ...row.fields, manualPrefilter: approval };
+          await db`INSERT INTO editorial_overrides (article_id,fields,reason,version,updated_by)
+            VALUES (${item.id},${db.json(fields as never)},${command.reason},1,${actor}) ON CONFLICT (article_id) DO UPDATE
+            SET fields=EXCLUDED.fields,reason=EXCLUDED.reason,version=editorial_overrides.version+1,updated_by=EXCLUDED.updated_by,updated_at=now()`;
+          await db`UPDATE articles SET processing_state='new',processing_error=NULL,processing_attempts=0,processing_retry_at=NULL WHERE id=${item.id}`;
+          await publishArticleTx(db, item.id);
+          const jobId = await queueProcessing(item.id, { step: "analyze", attemptTag: `manual-prefilter:${requestId}`, db });
+          if (!jobId) throw new Conflict("未能创建后续分析任务");
+          await audit(actor, "content.prefilter-pass", `content:${item.id}`, command.reason,
+            { label: row.label, analysisId: row.analysis_id, revision: row.revision }, { approval, jobId }, { db, requestId });
+          return { id: item.id, status: "succeeded" as const, reason: null };
+        });
+        result[outcome.status] += 1;
+        result.rows.push(outcome);
+      } catch (error) {
+        result.failed += 1;
+        result.rows.push({ id: item.id, status: "failed", reason: error instanceof Conflict ? error.message : "保存或入队失败，未保存该项审核" });
+      }
+    }
+    await audit(actor, "content.prefilter.batch", subject, command.reason, null, { fingerprint, result }, { db: tx, requestId });
+    return result;
+  });
 }
 
 type Chain = BeforeJson<AdminContentChain>;
@@ -212,7 +333,8 @@ export async function contentChain(id: string): Promise<Chain | null> {
     sql<Chain["revisions"]>`SELECT revision, title, content_hash, created_at FROM article_revisions WHERE article_id = ${id} ORDER BY revision DESC LIMIT 10`,
     sql<Chain["analyses"]>`
       SELECT an.id, an.origin, an.model, an.prompt_version, an.input_revision, an.relevance, an.category, an.score, an.selected, an.title_zh, an.reason_zh,
-             an.created_at,
+             an.created_at,an.output->'prefilter'->>'label' AS prefilter_label,an.output->'prefilter'->>'reason' AS prefilter_reason,
+             (an.output->'manualPrefilter' IS NOT NULL) AS manual_prefilter,
              (SELECT coalesce(jsonb_agg(jsonb_build_object('id', r.id, 'status', r.status, 'service', r.service, 'model', r.model, 'cost', r.cost, 'at', r.created_at) ORDER BY r.id), '[]'::jsonb)
                 FROM receipts r WHERE r.id = ANY(an.receipt_ids)) AS receipts
       FROM analyses an WHERE an.article_id = ${id} ORDER BY an.created_at DESC LIMIT 10`,
@@ -248,6 +370,22 @@ async function overrideRow(id: string, tx: Tx) {
   return o ?? { fields: {}, visibility: null, version: 0 };
 }
 
+async function publicationConflict(tx: Tx, id: string, operation: string): Promise<Conflict> {
+  const [state] = await tx<{ status: string; label: string | null; summary: string | null; participation_mode: string }[]>`
+    SELECT ${contentStatus()} AS status, an.output->'prefilter'->>'label' AS label, p.summary, s.participation_mode
+    FROM articles a JOIN sources s ON s.id=a.source_id LEFT JOIN publications p ON p.article_id=a.id
+    LEFT JOIN LATERAL (SELECT output FROM analyses WHERE article_id=a.id ORDER BY input_revision DESC,id DESC LIMIT 1) an ON true
+    WHERE a.id=${id}`;
+  const detail = state?.label === "UNKNOWN"
+    ? "原始预筛结果为 UNKNOWN。请在内容诊断使用专用“人工判为 PASS”审核后继续分析，或重新评估；公开范围、索引和精选设置不放行预筛。"
+    : state?.label === "BLOCK" ? "预筛结果为 BLOCK，按规则拦截。请按新规则重新评估，预筛与分析通过后再操作。"
+    : state?.participation_mode === "hot_signal" ? "信源仅用于热度参考，不提供公开详情页。"
+    : state?.status === "人工下架" ? "内容已人工下架，请先恢复公开范围。"
+    : !state?.summary?.trim() && operation === "搜索收录" ? "内容未公开或缺少有效摘要，不能进入搜索索引。"
+    : `当前状态为${state?.status ?? "未公开"}，尚未满足发布或精选条件。请核对当前版本分析、拦截标签、信源档位与归组条件。`;
+  return new Conflict(`${operation}未生效：${detail}人工设置不能绕过发布门禁。`);
+}
+
 /**
  * Public / summary-only / withdrawn. Applies to the site, API, RSS, MCP, the sync ledger and the
  * search index through the one publication projection; ETags change with the content.
@@ -261,6 +399,7 @@ export async function setVisibility(id: string, input: { visibility: "public" | 
       INSERT INTO editorial_overrides (article_id, visibility, reason, version, updated_by) VALUES (${id}, ${input.visibility}, ${input.reason}, 1, ${actor})
       ON CONFLICT (article_id) DO UPDATE SET visibility = EXCLUDED.visibility, reason = EXCLUDED.reason, version = editorial_overrides.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()`;
     const published = await publishArticleTx(tx, id);
+    if (published?.visibility !== input.visibility) throw await publicationConflict(tx, id, "公开范围修改");
     let hot = false;
     if (published?.reduced || (before.visibility ?? "public") !== input.visibility) {
       hot = await inHotRanking(id, tx);
@@ -285,6 +424,8 @@ export async function setSeoIndexed(id: string, input: { indexed: boolean; reaso
     const [before] = await tx<{ indexable: boolean }[]>`SELECT indexable FROM publications WHERE article_id = ${id}`;
     if (!before) return null;
     const published = await setSeoDecision(tx, id, input.indexed);
+    const [after] = await tx<{ indexable: boolean }[]>`SELECT indexable FROM publications WHERE article_id=${id}`;
+    if (after?.indexable !== input.indexed) throw await publicationConflict(tx, id, "搜索收录");
     await audit(actor, "content.seo", `content:${id}`, input.reason, { indexed: before.indexable }, { indexed: input.indexed }, { db: tx });
     return published;
   });
@@ -306,7 +447,7 @@ const FieldsSchema = z
 
 /** Manual corrections win over model output; `clear` removes a correction. */
 export async function overrideFields(id: string, input: { fields: unknown; clear?: string[]; reason: string; version: number }, actor: string) {
-  z.object({ reason: z.string().trim().min(1), version: z.number().int().nonnegative(), clear: z.array(z.string()).optional() }).parse(input);
+  z.object({ reason: z.string().trim().min(1), version: z.number().int().nonnegative(), clear: z.array(z.enum(Object.keys(FieldsSchema.shape) as [string, ...string[]])).optional() }).parse(input);
   const fields = FieldsSchema.parse(input.fields ?? {});
   const published = await sql.begin(async (tx) => {
     if (fields.category && !(await loadCategories(tx)).some(c => c.key === fields.category)) throw Object.assign(new Error("invalid category"), { statusCode: 400 });
@@ -318,6 +459,10 @@ export async function overrideFields(id: string, input: { fields: unknown; clear
       INSERT INTO editorial_overrides (article_id, fields, reason, version, updated_by) VALUES (${id}, ${tx.json(next as never)}, ${input.reason}, 1, ${actor})
       ON CONFLICT (article_id) DO UPDATE SET fields = EXCLUDED.fields, reason = EXCLUDED.reason, version = editorial_overrides.version + 1, updated_by = EXCLUDED.updated_by, updated_at = now()`;
     const published = await publishArticleTx(tx, id);
+    if (fields.selected === true) {
+      const [after] = await tx<{ selection_candidate: boolean; visibility: string }[]>`SELECT selection_candidate,visibility FROM publications WHERE article_id=${id}`;
+      if (!after?.selection_candidate || after.visibility !== "public") throw await publicationConflict(tx, id, "强制精选");
+    }
     if (published?.changed) {
       await emit("articleChanged", { id, kind: "content", reduced: published.reduced, reason: "manual correction" }, tx);
       const changedFields = new Set([...Object.keys(fields), ...(input.clear ?? [])]);

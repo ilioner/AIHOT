@@ -15,7 +15,7 @@ import { closeDb, sql } from "@aihot/backend/db";
 import { overrideFields, setVisibility } from "@aihot/backend/admin/content";
 import { updateSource } from "@aihot/backend/admin/sources";
 import { upsertMaterial } from "@aihot/backend/content/materials";
-import { stopBoss } from "@aihot/backend/jobs/queue";
+import { enqueue, QUEUES, stopBoss } from "@aihot/backend/jobs/queue";
 import { publishArticle, republishSource } from "@aihot/backend/publication/publish";
 import { computeHotRanking } from "@aihot/backend/events/hot";
 import { latestHotRanking } from "@aihot/backend/publication/hot";
@@ -135,6 +135,112 @@ test("publication requires a current completed passing analysis and preserves ma
   const { articleId: pending } = await upsertMaterial({ sourceId: SOURCE, url: `https://example.com/${T}-pending`, title: "未经分析", bodyText: BODY, bodyStatus: "ok", via: "fetch" });
   await publishArticle(pending);
   assert.equal((await get(`/api/site/items/${pending}`)).status, 404);
+});
+
+test("the approved topic directory publishes stored cards regardless of model verdict without selecting them", async () => {
+  const source = "catalog-360-topics";
+  await sql`INSERT INTO sources (id,name,kind,tier,participation_mode,site_fulltext,syndicate_fulltext)
+    VALUES (${source},'360 AI · 专题推荐','external','T1','editorial',false,false) ON CONFLICT DO NOTHING`;
+  const [{ count: receipts }] = await sql`SELECT count(*) FROM receipts`;
+  for (const label of ["UNKNOWN", "BLOCK", "PASS", "unjudged"]) {
+    const title = `目录-${label}-${T}`;
+    const url = `https://aistore.360.cn/#/subjectdetail?id=${T}-${label}`;
+    const summary = label === "unjudged" ? null : "源站简介";
+    const { articleId: id } = await upsertMaterial({ sourceId: source, url, identityKey: `directory:${T}:${label}`, title, excerpt: summary, bodyText: BODY,
+      bodyStatus: "ok", via: "test", undatedPolicy: "discovery" });
+    if (label !== "unjudged") {
+      await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,category,tags,title_zh,summary_zh,score,selected,output)
+        VALUES (${id},1,'model','block','opinion',ARRAY['其他'],'模型标题','模型摘要',99,true,
+          ${sql.json({ prefilter: { label }, writer: "none" })})`;
+      await sql`UPDATE articles SET processing_state='failed',processing_error='old model failure',revision=2 WHERE id=${id}`;
+    }
+    const before = await sql`SELECT * FROM analyses WHERE article_id=${id}`;
+    await publishArticle(id);
+    const response = await get(`/api/site/items/${id}`);
+    assert.equal(response.status, 200, label);
+    const detail = JSON.parse(response.body);
+    assert.equal(detail.title, title);
+    assert.equal(detail.summary, summary);
+    assert.equal(detail.selected, false);
+    assert.equal(detail.score, null);
+    assert.equal(detail.category, "ai-tools");
+    const [projection] = await sql`SELECT eligible,body_mode,syndicate,selection_candidate FROM publications WHERE article_id=${id}`;
+    assert.deepEqual(projection, { eligible: true, body_mode: "summary", syndicate: false, selection_candidate: false });
+    for (const prefix of ["/api/site/pool?q=", "/api/v1/items?mode=all&q=", "/api/v1/agent/search?q="]) {
+      assert.ok((await get(`${prefix}${encodeURIComponent(title)}`)).body.includes(id), prefix);
+    }
+    assert.ok((await get("/feed/all.xml")).body.includes(id));
+    assert.equal((await get("/feed.xml")).body.includes(id), false);
+    const markdown = await get(`/items/${id}/markdown`);
+    assert.equal(markdown.status, 200);
+    assert.ok(markdown.body.includes(title) && markdown.body.includes(url));
+    assert.equal(markdown.body.includes(BODY), false);
+    assert.deepEqual(await sql`SELECT * FROM analyses WHERE article_id=${id}`, before);
+    await setVisibility(id, { visibility: "withdrawn", reason: "keep manual withdrawal", version: 0 }, "test");
+    await publishArticle(id);
+    assert.equal((await get(`/api/site/items/${id}`)).status, 404);
+    assert.equal((await get("/feed/all.xml")).body.includes(id), false);
+  }
+  assert.equal((await sql`SELECT count(*) FROM receipts`)[0]!.count, receipts);
+  const id = await article();
+  await sql`UPDATE analyses SET relevance='block' WHERE article_id=${id}`;
+  await publishArticle(id);
+  assert.equal((await get(`/api/site/items/${id}`)).status, 404, "other sources still require a passing analysis");
+  await sql`INSERT INTO sources (id,name,kind,participation_mode) VALUES ('constructor','not a directory','external','editorial')`;
+  const { articleId: inherited } = await upsertMaterial({ sourceId: "constructor", url: `https://example.com/${T}-inherited`, title: "非白名单", bodyStatus: "none", via: "test" });
+  await publishArticle(inherited);
+  assert.equal((await get(`/api/site/items/${inherited}`)).status, 404, "directory policy only matches its own configured keys");
+});
+
+test("directory history repair previews, cancels obsolete jobs, preserves paid evidence and withdrawals, and is idempotent", async () => {
+  const { articleId: id } = await upsertMaterial({ sourceId: "catalog-360-topics", url: `https://example.com/${T}-directory-repair`,
+    title: "旧专题待修复", excerpt: "历史简介", bodyStatus: "pending", via: "test" });
+  await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,output) VALUES (${id},1,'model','block','{"prefilter":{"label":"UNKNOWN"},"writer":"none"}')`;
+  await sql`UPDATE articles SET processing_state='blocked',processing_error='旧失败',processing_retry_at=now() WHERE id=${id}`;
+  await enqueue(QUEUES.analyze, { articleId: id }, { singletonKey: id });
+  await enqueue(QUEUES.extractBody, { articleId: id }, { singletonKey: id });
+  const analyses = await sql`SELECT * FROM analyses WHERE article_id=${id}`;
+  const before = await sql`SELECT * FROM articles WHERE id=${id}`;
+  const receipts = await sql`SELECT * FROM receipts ORDER BY id`;
+  const run = (apply: boolean) => promisify(execFile)(process.execPath, ["scripts/publish-directory-sources.ts", ...(apply ? ["--apply"] : [])], {
+    env: { ...process.env, COLLECT_ENABLED: "false", MODEL_CALLS_ENABLED: "false" },
+  });
+  const preview = JSON.parse((await run(false)).stdout.trim().split("\n")[0]!);
+  assert.ok(preview.sources.some((source: { sourceId: string }) => source.sourceId === "catalog-360-topics"));
+  assert.deepEqual(await sql`SELECT * FROM articles WHERE id=${id}`, before);
+  await sql`UPDATE pgboss.job SET state='active',started_on=now() WHERE name=${QUEUES.analyze} AND data->>'articleId'=${id}`;
+  await assert.rejects(run(true), /运行中的任务/);
+  assert.deepEqual(await sql`SELECT * FROM articles WHERE id=${id}`, before);
+  await sql`UPDATE pgboss.job SET state='created',started_on=NULL WHERE name=${QUEUES.analyze} AND data->>'articleId'=${id}`;
+  await sql`CREATE FUNCTION reject_directory_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.action='content.directory-publication' THEN RAISE EXCEPTION 'directory audit failure'; END IF;
+      RETURN NEW;
+    END $$`;
+  await sql`CREATE TRIGGER reject_directory_audit BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION reject_directory_audit()`;
+  try {
+    await assert.rejects(run(true), /directory audit failure/);
+    assert.deepEqual(await sql`SELECT * FROM articles WHERE id=${id}`, before);
+    assert.ok((await sql`SELECT state FROM pgboss.job WHERE data->>'articleId'=${id}`).every(job => job.state === "created"));
+    assert.equal((await sql`SELECT 1 FROM publications WHERE article_id=${id}`).length, 0);
+  } finally {
+    await sql`DROP TRIGGER reject_directory_audit ON audit_log`;
+    await sql`DROP FUNCTION reject_directory_audit()`;
+  }
+  await run(true);
+  assert.equal((await get(`/api/site/items/${id}`)).status, 200);
+  const [settled] = await sql`SELECT processing_state,processing_error,processing_retry_at FROM articles WHERE id=${id}`;
+  assert.deepEqual(settled, { processing_state: "skipped", processing_error: null, processing_retry_at: null });
+  assert.ok((await sql`SELECT state FROM pgboss.job WHERE data->>'articleId'=${id}`).every(job => job.state === "cancelled"));
+  assert.deepEqual(await sql`SELECT * FROM analyses WHERE article_id=${id}`, analyses);
+  assert.deepEqual(await sql`SELECT * FROM receipts ORDER BY id`, receipts);
+  const [{ count: audits }] = await sql`SELECT count(*) FROM audit_log WHERE actor='directory-publication-policy'`;
+  assert.ok(audits > 0);
+  await run(true);
+  assert.equal((await sql`SELECT count(*) FROM audit_log WHERE actor='directory-publication-policy'`)[0]!.count, audits);
+  const [{ count: withdrawn }] = await sql`SELECT count(*) FROM editorial_overrides o JOIN articles a ON a.id=o.article_id
+    JOIN publications p ON p.article_id=a.id WHERE a.source_id='catalog-360-topics' AND o.visibility='withdrawn' AND p.visibility='withdrawn'`;
+  assert.equal(withdrawn, 4);
 });
 
 test("historical policy repair blocks UNKNOWN without paying again or restoring a manual withdrawal", async () => {
@@ -491,8 +597,9 @@ test("blocked effective tags withdraw historical and manually corrected content"
 
   await overrideFields(id, { fields: { tags: ["政策文件"], selected: true }, reason: "纠正标签", version: 0 }, "test");
   assert.equal((await get(`/api/site/items/${id}`)).status, 200, "effective corrected tags replace historical tags");
-  await overrideFields(id, { fields: { tags: ["政策文件", " #其他 "], selected: true }, reason: "标记其他", version: 1 }, "test");
-  await setVisibility(id, { visibility: "public", reason: "尝试公开", version: 2 }, "test");
+  await overrideFields(id, { fields: { tags: ["政策文件", " #其他 "], selected: false }, reason: "标记其他", version: 1 }, "test");
+  await assert.rejects(setVisibility(id, { visibility: "public", reason: "尝试公开", version: 2 }, "test"), { code: "conflict" });
+  await assert.rejects(overrideFields(id, { fields: { selected: true }, reason: "尝试精选", version: 2 }, "test"), { code: "conflict" });
   const [published] = await sql`SELECT visibility, eligible, selected FROM publications WHERE article_id = ${id}`;
   assert.deepEqual([published!.visibility, published!.eligible, published!.selected], ["withdrawn", false, false]);
   for (const path of [`/api/site/items/${id}`, `/api/v1/items/${id}`, `/items/${id}/markdown`]) {

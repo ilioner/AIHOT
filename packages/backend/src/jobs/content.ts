@@ -1,5 +1,5 @@
 // Content processing: body extraction when the source needs it → analysis → publish → event grouping.
-// Every article reaches the queues through queueProcessing, which records when it was queued. A failed
+// queueProcessing settles configured directories directly and queues other articles, recording when. A failed
 // step records when to try again, and the sweep (content.sweep) is the timer that queues it then; it
 // also queues articles whose job was never created or has waited half an hour. A provider outage makes
 // an article wait and retry with backoff; only a permanent refusal or exhausted retries end in
@@ -10,6 +10,8 @@ import { extractArticleBody, pageFetchable } from "../content/extract.ts";
 import { analyzeArticle } from "../editorial/analyze.ts";
 import { isHistorical } from "../content/materials.ts";
 import { publishArticle } from "../publication/publish.ts";
+import { settleDirectoryArticle } from "../publication/directory.ts";
+import { directoryPolicy } from "../publication/rules.ts";
 import { BudgetExceededError, failedReceiptId, failureKind } from "../providers/receipts.ts";
 import { enqueue, QUEUES, shutdownSignal, work } from "./queue.ts";
 
@@ -25,6 +27,7 @@ const QUEUED_STALE = "30 minutes";
 type Step = "extract" | "analyze";
 
 interface Route {
+  directory: boolean;
   step: Step;
   /** Heat-only source: the post goes straight to event grouping as discussion evidence. */
   signal: boolean;
@@ -38,8 +41,8 @@ interface Route {
  * history adds no heat).
  */
 async function route(articleId: string, db: Db): Promise<Route | null> {
-  const [row] = await db<{ body_status: string; participation_mode: string; kind: string; config: Record<string, unknown>; url: string; bare: boolean; backfill: boolean; published_at: Date | null; discovered_at: Date }[]>`
-    SELECT a.body_status, s.participation_mode, s.kind, s.config, a.url, (coalesce(a.body_text, '') = '' AND a.x_post IS NULL) AS bare,
+  const [row] = await db<{ source_id: string; body_status: string; participation_mode: string; kind: string; config: Record<string, unknown>; url: string; bare: boolean; backfill: boolean; published_at: Date | null; discovered_at: Date }[]>`
+    SELECT a.source_id, a.body_status, s.participation_mode, s.kind, s.config, a.url, (coalesce(a.body_text, '') = '' AND a.x_post IS NULL) AS bare,
            a.backfill, a.published_at, a.discovered_at
     FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
   if (!row) return null;
@@ -49,7 +52,7 @@ async function route(articleId: string, db: Db): Promise<Route | null> {
   const wantsBody = row.config.fetchPublicContent === true || !!row.config.detail || row.kind === "web_list" || row.kind === "web_search";
   const needsPage = !signal && pageFetchable(row.url, row.kind) && (wantsBody || row.bare);
   const needsXArticle = row.kind === "x_search" && (!signal || (row.participation_mode === "hot_signal" && !historical));
-  return { step: pending && (needsPage || needsXArticle) ? "extract" : "analyze", signal, historical };
+  return { step: pending && (needsPage || needsXArticle) ? "extract" : "analyze", signal, historical, directory: !!directoryPolicy(row.source_id, row.participation_mode) };
 }
 
 /**
@@ -73,6 +76,10 @@ export async function queueProcessing(articleId: string, opts: { step?: Step; at
   const db = opts.db ?? sql;
   const r = await route(articleId, db);
   if (!r) return null;
+  if (r.directory) {
+    await settleDirectoryArticle(articleId, db);
+    return null;
+  }
   const step = opts.step ?? r.step;
   const [queued] = await db<{ processing_attempt_tag: string | null }[]>`
     UPDATE articles SET processing_queued_at = now(), processing_attempt_tag = coalesce(${opts.attemptTag ?? null}, processing_attempt_tag)
@@ -117,8 +124,8 @@ export async function settleNonEditorial(articleId: string): Promise<{ group: bo
 }
 
 async function processingInput(articleId: string) {
-  const [row] = await sql<{ participation_mode: string; revision: number; backfill: boolean; published_at: Date | null; discovered_at: Date }[]>`
-    SELECT s.participation_mode, a.revision, a.backfill, a.published_at, a.discovered_at FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
+  const [row] = await sql<{ source_id: string; participation_mode: string; revision: number; backfill: boolean; published_at: Date | null; discovered_at: Date }[]>`
+    SELECT a.source_id, s.participation_mode, a.revision, a.backfill, a.published_at, a.discovered_at FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
   return row ? { ...row, historical: isHistorical(row) } : null;
 }
 
@@ -130,6 +137,10 @@ async function processingInput(articleId: string) {
 export async function processArticle(articleId: string, opts: { attemptTag?: string } = {}): Promise<{ state: string; retryAt?: Date }> {
   const row = await processingInput(articleId);
   if (!row) return { state: "missing" };
+  if (directoryPolicy(row.source_id, row.participation_mode)) {
+    await settleDirectoryArticle(articleId);
+    return { state: "skipped" };
+  }
   try {
     return await processRevision(articleId, row, opts);
   } catch (error) {
@@ -211,6 +222,7 @@ export async function registerContentJobs(boss: PgBoss) {
  */
 export async function registerExtractionJobs(boss: PgBoss) {
   await work(boss, QUEUES.extractBody, { localConcurrency: 4, pollingIntervalSeconds: 2 }, async ({ articleId }) => {
+    if (await settleDirectoryArticle(articleId)) return { state: "skipped" };
     const [input] = await sql<{ revision: number }[]>`SELECT revision FROM articles WHERE id = ${articleId}`;
     if (!input) return { state: "missing" };
     try {

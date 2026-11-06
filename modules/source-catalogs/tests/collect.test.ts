@@ -7,6 +7,8 @@ import { collectCatalog, collectQueue, scheduleCollect } from "../backend/collec
 import { installModules } from "@aihot/backend/modules";
 import { fetchNow } from "@aihot/backend/admin/sources";
 import module from "../server.ts";
+import { processArticle, queueProcessing } from "@aihot/backend/jobs/content";
+import { setVisibility } from "@aihot/backend/admin/content";
 
 const teacher = { code: 0, data: { id: 44, name: "教师的AI辅助", sites: [
   { id: 1, name: "工具甲", tool_name: "制作课件", des: "把文档转成课件", url: "https://tools.example/one" },
@@ -86,6 +88,36 @@ test("collection persists first observation without time bumps or cross-topic du
   assert.equal(stored!.media[0].url, "https://image.example/tool.png");
   const discoveries = await sql`SELECT source_id FROM article_discoveries WHERE source_id IN ('catalog-360-teacher', 'catalog-360-student')`;
   assert.equal(discoveries.length, 4);
+});
+
+test("topic collection publishes new and revised cards without paid analysis or grouping and keeps withdrawals", async () => {
+  const pack = { code: 0, data: { list: [{ id: "directory-new", name: "新专题", des: "简短简介" }, { id: "directory-bare", name: "只有名称" }] } };
+  const before = await sql`SELECT * FROM receipts ORDER BY id`;
+  const initial = await collectCatalog("catalog-360-topics", response(pack));
+  assert.equal(initial.status, "ok");
+  assert.equal(initial.created, 2);
+  const rows = await sql`SELECT a.id,a.revision,a.discovered_at,a.timeline_at,a.processing_state,p.visibility,p.title,p.summary,p.selected
+    FROM articles a JOIN publications p ON p.article_id=a.id WHERE a.source_id='catalog-360-topics' ORDER BY a.id`;
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every(row => row.processing_state === "skipped" && row.visibility === "public" && !row.selected));
+  const card = rows.find(row => row.title === "新专题")!;
+  assert.equal(card.summary, "简短简介");
+  assert.equal((await sql`SELECT count(*) AS n FROM analyses WHERE article_id IN ${sql(rows.map(row => row.id))}`)[0]!.n, 0);
+  assert.equal((await sql`SELECT count(*) AS n FROM pgboss.job WHERE name IN ('content.analyze','content.extract-body','events.group')
+    AND data->>'articleId' IN ${sql(rows.map(row => row.id))}`)[0]!.n, 0);
+  assert.deepEqual(await processArticle(card.id, { attemptTag: "old-queued-analysis" }), { state: "skipped" });
+  assert.equal(await queueProcessing(card.id, { step: "extract" }), null);
+  await collectCatalog("catalog-360-topics", response(pack));
+  const [repeat] = await sql`SELECT discovered_at,timeline_at FROM articles WHERE id=${card.id}`;
+  assert.deepEqual(repeat, { discovered_at: card.discovered_at, timeline_at: card.timeline_at });
+  const revised = { ...pack, data: { list: [{ ...pack.data.list[0], name: "新专题已更新", des: "更新简介" }] } };
+  assert.equal((await collectCatalog("catalog-360-topics", response(revised))).revised, 1);
+  assert.equal((await sql`SELECT title FROM publications WHERE article_id=${card.id}`)[0]!.title, "新专题已更新");
+  await setVisibility(card.id, { visibility: "withdrawn", reason: "人工下架", version: 0 }, "test");
+  revised.data.list[0]!.des = "再次更新";
+  await collectCatalog("catalog-360-topics", response(revised));
+  assert.equal((await sql`SELECT visibility FROM publications WHERE article_id=${card.id}`)[0]!.visibility, "withdrawn");
+  assert.deepEqual(await sql`SELECT * FROM receipts ORDER BY id`, before);
 });
 
 test("failures remain visible and defer the next scheduled request", async () => {
