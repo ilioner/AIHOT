@@ -2,10 +2,12 @@
 // but it is served from the same public read layer as v1, RSS and MCP.
 import type { CategoryKey, ChannelKey, PublicCategoryView } from "./taxonomy.ts";
 import { isoWeekRange, monthDay } from "./time.ts";
+import type { SourceMetadata } from "./source-metadata.ts";
 
 export interface SourceRef {
   /** The name readers see (publication/rules.ts publicSourceName), as is every source name here. */
   name: string;
+  iconUrl?: string | null;
 }
 
 export interface MediaView {
@@ -43,6 +45,7 @@ export interface ItemSummary {
   title: string;
   originalTitle: string | null;
   summary: string | null;
+  notes?: string | null;
   reason: string | null;
   source: SourceRef;
   links: { original: string };
@@ -56,10 +59,13 @@ export interface ItemSummary {
   selected: boolean;
   channel: "news" | "x";
   story: StoryRef | null;
+  sourceMetadata?: SourceMetadata | null;
+  media?: MediaView[];
 }
 
 /** The fields rendered by a site feed card; full original text lives in the item detail. */
-export interface FeedItemSummary extends Pick<ItemSummary, "id" | "title" | "summary" | "reason" | "source" | "publishedAt" | "timelineAt" | "category" | "categoryLabel" | "tags" | "score" | "selected" | "channel"> {
+export interface FeedItemSummary extends Pick<ItemSummary, "id" | "title" | "summary" | "notes" | "reason" | "source" | "publishedAt" | "timelineAt" | "category" | "categoryLabel" | "tags" | "score" | "selected" | "channel" | "sourceMetadata" | "media"> {
+  links?: ItemSummary["links"];
   x: (Pick<XPostView, "authorName" | "handle" | "avatarUrl" | "avatarSrcSet" | "media"> & {
     quoted: Omit<NonNullable<XPostView["quoted"]>, "url"> | null;
   }) | null;

@@ -10,12 +10,14 @@ import { proxiedImage, proxiedImageSet } from "../media/imgproxy.ts";
 import { sourceOwnsPost } from "../sources/account.ts";
 import { displayTags, publicSourceName } from "./rules.ts";
 import { foldableSelectionCondition, seatedCondition } from "./scope.ts";
+import { sourceMetadata } from "@aihot/contracts/source-metadata";
 
 export interface ItemRow {
   id: string;
   title: string;
   original_title: string | null;
   summary: string | null;
+  notes: string | null;
   reason: string | null;
   category: string | null;
   tags: string[];
@@ -33,6 +35,9 @@ export interface ItemRow {
   indexable: boolean;
   fact_id: number | null;
   source_name: string;
+  source_icon_url?: string | null;
+  source_metadata?: unknown;
+  media?: Array<Record<string, any>>;
   /** Participation mode of the source now (editorial, hot_signal, isolated). */
   source_mode: string;
   x_post: Record<string, any> | null;
@@ -49,10 +54,10 @@ export interface ItemRow {
 
 /** Columns every item listing selects. Internal judgement details never leave this layer. */
 export const ITEM_COLUMNS = sql`
-  p.article_id AS id, p.title, p.original_title, p.summary, p.reason, p.category, p.tags, p.score,
+  p.article_id AS id, p.title, p.original_title, p.summary, p.notes, p.reason, p.category, p.tags, p.score,
   p.selected, p.seat, p.channel, p.url, p.published_at, p.discovered_at, p.timeline_at, p.visibility,
   p.body_mode, p.indexable, p.fact_id, s.name AS source_name, s.participation_mode AS source_mode,
-  a.x_post, a.author, a.language,
+  a.x_post, a.author, a.language, a.media, a.raw->'sourceMetadata' AS source_metadata, s.icon_url AS source_icon_url,
   CASE WHEN s.kind = 'x_search' AND ${sourceOwnsPost(sql`s.config`, sql`a.x_post->>'handle'`)} THEN s.icon_url END AS author_avatar_url,
   st.public_id::text AS story_public_id, st.title AS story_title,
   CASE WHEN p.channel = 'x' THEN tr.body_text END AS zh_text, qt.text_zh AS quoted_zh`;
@@ -152,13 +157,18 @@ export function showsPost(row: { channel: string; body_mode: string }): boolean 
 
 /** The shared public article; its X post is added as each answer shows it. */
 export function toItemSummary(row: ItemRow, categories: readonly CategoryDefinition[] = DEFAULT_CATEGORIES): ItemSummary {
+  const metadata = row.channel === "x" ? null : sourceMetadata(row.source_metadata);
+  const images = row.channel === "x" ? [] : row.media?.length ? row.media : metadata?.coverUrl ? [{ kind: "image", url: metadata.coverUrl }] : [];
   return {
     id: row.id,
     title: row.title,
     originalTitle: row.original_title,
     summary: row.summary,
+    notes: row.notes,
     reason: row.selected ? row.reason : null,
-    source: { name: publicSourceName(row.source_name) },
+    source: { name: publicSourceName(row.source_name), iconUrl: proxiedImage(row.source_icon_url, "avatar") },
+    sourceMetadata: metadata,
+    media: images.map(image => mediaView(image, "card", true)).filter((image): image is MediaView => image !== null),
     links: { original: row.url },
     publishedAt: row.published_at?.toISOString() ?? null,
     discoveredAt: row.discovered_at.toISOString(),
@@ -178,8 +188,9 @@ export function toFeedItemSummary(row: ItemRow, categories: readonly CategoryDef
   const item = toItemSummary(row, categories);
   const x = showsPost(row) ? xView(row, true) : null;
   return {
-    id: item.id, title: item.title, summary: item.summary ?? (x?.text || null), reason: item.reason,
+    id: item.id, title: item.title, summary: item.summary ?? (x?.text || null), notes: item.notes, reason: item.reason,
     source: item.source, publishedAt: item.publishedAt, timelineAt: item.timelineAt,
+    links: item.links, sourceMetadata: item.sourceMetadata, media: item.media,
     category: item.category, categoryLabel: item.categoryLabel, tags: item.tags, score: item.score, selected: item.selected, channel: item.channel,
     x: x ? {
       authorName: x.authorName, handle: x.handle, avatarUrl: x.avatarUrl,

@@ -20,7 +20,28 @@ export function SourceLine({ item, className = "" }: { item: Pick<FeedItemSummar
       </span>
     );
   }
-  return <span className={`min-w-0 truncate ${className}`}>{item.source.name}</span>;
+  return <span className={`flex min-w-0 items-center gap-1.5 ${className}`}>
+    {item.source.iconUrl && <SourceAvatar name={item.source.name} avatarUrl={item.source.iconUrl} size={16} />}
+    <span className="truncate">{item.source.name}</span>
+  </span>;
+}
+
+export function SourceDetails({ item }: { item: Pick<FeedItemSummary, "sourceMetadata" | "links"> }) {
+  const metadata = item.sourceMetadata;
+  const links = [
+    { label: "原文", url: item.links?.original ?? metadata?.itemUrl },
+    { label: "来源链接", url: metadata?.originalUrl },
+    { label: "来源栏目", url: metadata?.catalogUrl },
+    { label: "PDF 文件", url: metadata?.documentUrl },
+  ].filter((link, index, all) => link.url && all.findIndex(other => other.url === link.url) === index);
+  return <div className="relative z-10 mt-2 space-y-1 text-[12px] leading-relaxed text-ink-4">
+    {metadata?.iconUrl && metadata.iconUrl !== metadata.coverUrl && <img src={metadata.iconUrl} alt={metadata.title} width={32} height={32} loading="lazy" className="rounded-control object-contain" />}
+    {metadata?.categories.length ? <p>源站分类：{metadata.categories.join(" · ")}</p> : null}
+    {metadata?.tags.length ? <p>源站标签：{metadata.tags.map(tag => `#${tag}`).join(" ")}</p> : null}
+    <div className="flex flex-wrap gap-x-3 gap-y-1">
+      {links.map(link => <a key={link.url} href={link.url!} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">{link.label} ↗</a>)}
+    </div>
+  </div>;
 }
 
 /** Up to four media thumbnails, kept small in lists (the detail page shows them larger). Videos are stills. */

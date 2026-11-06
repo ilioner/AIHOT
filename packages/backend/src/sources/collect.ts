@@ -43,6 +43,7 @@ export interface StoredDetail {
   excerpt: string | null;
   body_status: string;
   rules: string | null;
+  source_metadata?: Candidate["sourceMetadata"];
 }
 
 /** What material under these identities already has, whichever source stored it. */
@@ -50,7 +51,7 @@ export async function storedDetails(identities: string[]): Promise<Map<string, S
   if (identities.length === 0) return new Map();
   // One array parameter: a long listing would exceed the query's parameter limit.
   const rows = await sql<StoredDetail[]>`SELECT identity_key, source_id, title, published_at, publication_time, excerpt, body_status,
-    raw->'collectionDetail'->>'rules' AS rules
+    raw->'collectionDetail'->>'rules' AS rules, raw->'sourceMetadata' AS source_metadata
     FROM articles WHERE identity_key = ANY(${identities}::text[])`;
   return new Map(rows.map((r) => [r.identity_key, r]));
 }
@@ -123,6 +124,7 @@ function fromStored(c: CollectionCandidate, stored: StoredDetail, source: Source
   const d = source.config.detail;
   if (d?.titleSelector || d?.titleRegex) c.title = stored.title;
   const current = stored.rules === rules;
+  if (current && stored.source_metadata?.documentUrl) c.sourceMetadata = stored.source_metadata;
   if ((current || d?.publishedAtAuthoritative !== true) && !c.publishedAt) {
     c.publishedAt = stored.published_at;
     c.publicationTime = stored.publication_time ?? null;
@@ -132,6 +134,7 @@ function fromStored(c: CollectionCandidate, stored: StoredDetail, source: Source
 
 /** What a detail page should add to an entry, or null when it would add nothing. */
 function detailNeed(c: CollectionCandidate, stored: StoredDetail | undefined, source: SourceRow, listingTitle: string): DetailNeed | null {
+  if (isPdfUrl(c.url)) return null;
   const d = source.config.detail!;
   const storedHeadline = !!stored && isCallToActionTitle(listingTitle) && !isCallToActionTitle(stored.title);
   const need: DetailNeed = {
@@ -143,11 +146,20 @@ function detailNeed(c: CollectionCandidate, stored: StoredDetail | undefined, so
   return need.date || need.title || need.summary ? need : null;
 }
 
+function isPdfUrl(value: string): boolean {
+  try { return /\.pdf$/i.test(new URL(value).pathname); }
+  catch { return false; }
+}
+
 /** A detail page's findings. A body comes from the same Readability path as extraction, using bytes already fetched. */
 function applyDetail(c: CollectionCandidate, got: Awaited<ReturnType<typeof fetchDetail>>, rules: string): void {
   c.detailRules = rules;
   if (got.title) c.title = got.title;
   if (got.summary) c.excerpt = got.summary;
+  if (got.documentUrl) {
+    c.sourceMetadata = { title: c.title, itemUrl: c.url, categories: c.categories ?? [], tags: [], documentUrl: got.documentUrl };
+    c.bodyStatus = "none";
+  }
   // A confirmed body enters through normal material revisions and skips the redundant fetch job.
   if (got.body) {
     c.bodyHtml = got.body.html;
@@ -223,7 +235,18 @@ async function store(sourceId: string, runId: number, candidates: CollectionCand
   let created = 0;
   let revised = 0;
   for (const c of candidates) {
-    const material = { ...c, sourceId, via: "fetch" as const, backfill };
+    const documentUrl = isPdfUrl(c.url) ? c.url : c.sourceMetadata?.documentUrl;
+    const metadata = (() => {
+      if (c.sourceMetadata) {
+        try { if (/^https?:$/.test(new URL(c.sourceMetadata.itemUrl).protocol)) return c.sourceMetadata; }
+        catch { /* non-page media URLs have no source metadata */ }
+      }
+      if (documentUrl) return { title: c.title, itemUrl: c.url, categories: c.categories ?? [], tags: [], coverUrl: null };
+      return undefined;
+    })();
+    const material = { ...c, sourceId, via: "fetch" as const, backfill,
+      ...(documentUrl && !c.bodyText ? { bodyStatus: "none" as const } : {}),
+      ...(metadata ? { sourceMetadata: { ...metadata, ...(documentUrl ? { documentUrl } : {}) } } : {}) };
     let res;
     try { res = await upsertMaterial(material); }
     catch (error) {

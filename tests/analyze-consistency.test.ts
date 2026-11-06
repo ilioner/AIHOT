@@ -20,7 +20,7 @@ const provider = await stub(async (_hit, request) => {
   }
   const content = step === "prefilter" ? { label: "PASS", reason: "local fixture" }
     : step === "score" ? { attentionScore: SELECTING_SCORE }
-    : step === "structure" ? { category: "policy", tags: [], subjects: [], scope: "single", fact: null }
+    : step === "structure" ? { category: "policy", tags: ["政策文件"], subjects: [], scope: "single", fact: null }
     : { itemType: "policy_release", authorRole: "principal", tags: ["政策文件"], editorialJudgment: "政策影响职教办学", titleZh: "教育部印发新文件", summaryZh: "教育部印发新文件，明确了适用范围与时间安排。" };
   return { choices: [{ message: { content: JSON.stringify(content) } }] };
 });

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
 import { createSource, updateSource } from "@aihot/backend/admin/sources";
-import { overrideFields, rerun, setSeoIndexed, setVisibility } from "@aihot/backend/admin/content";
+import { contentChain, searchContent, overrideFields, rerun, setSeoIndexed, setVisibility } from "@aihot/backend/admin/content";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { publishArticle } from "@aihot/backend/publication/publish";
 import { getBoss, stopBoss } from "@aihot/backend/jobs/queue";
@@ -24,6 +24,34 @@ after(async () => { await app.close(); await stopBoss(); await closeDb(); });
 async function article() {
   return (await upsertMaterial({ sourceId, url: `https://example.com/${tag()}`, title: "审查材料", bodyText: "正文", bodyStatus: "ok", via: "fetch", publishedAt: new Date() })).articleId;
 }
+
+test("admin status distinguishes waiting, failures, rule blocks and manual withdrawal", async () => {
+  const id = await article();
+  assert.equal((await contentChain(id))!.article.status_reason, "待分析");
+  await sql`UPDATE articles SET processing_state='failed' WHERE id=${id}`;
+  assert.equal((await searchContent(id))[0]!.status_reason, "分析失败");
+  await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,tags,selected)
+    VALUES (${id},1,'rule','block',ARRAY['其他'],false)`;
+  await sql`UPDATE articles SET processing_state='blocked' WHERE id=${id}`;
+  await publishArticle(id);
+  assert.equal((await contentChain(id))!.article.status_reason, "规则拦截");
+  await setVisibility(id, { visibility: "withdrawn", version: 0, reason: "人工审核撤下" }, "test");
+  assert.equal((await searchContent(id))[0]!.status_reason, "人工下架");
+});
+
+test("non-block content remains public without a summary or source publication date", async () => {
+  const id = await article();
+  await sql`UPDATE articles SET processing_state='analyzed',body_status='unconfirmed' WHERE id=${id}`;
+  await publishArticle(id);
+  assert.equal((await contentChain(id))!.article.status_reason, "公开");
+  await sql`UPDATE articles SET body_status='ok' WHERE id=${id}`;
+  assert.equal((await searchContent(id))[0]!.status_reason, "公开");
+  await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,summary_zh,selected)
+    VALUES (${id},1,'rule','pass',NULL,false)`;
+  await sql`UPDATE articles SET published_at=NULL,backfill=true WHERE id=${id}`;
+  await publishArticle(id);
+  assert.equal((await contentChain(id))!.article.status_reason, "公开");
+});
 
 test("concurrent source intake creates one source for the same feed", async () => {
   const blocker = await sql.reserve();
@@ -197,6 +225,10 @@ test("category settings require admin and CSRF, preserve identities and audit th
   assert.deepEqual(audit!.after, categories);
   const id = await article();
   await publishArticle(id);
+  const unknown = await app.inject({ method: "POST", url: `/api/admin/content/${id}/override`, headers,
+    payload: { fields: { category: "unknown-category" }, version: 0, reason: "不存在的分类" } });
+  assert.equal(unknown.statusCode, 400, unknown.body);
+  assert.equal((await sql`SELECT 1 FROM editorial_overrides WHERE article_id = ${id}`).length, 0, "an unknown category cannot create an override");
   await overrideFields(id, { fields: { category: extra.key }, version: 0, reason: "使用新分类" }, "test");
   assert.equal((await sql`SELECT category FROM publications WHERE article_id = ${id}`)[0]!.category, extra.key);
   await sql`DELETE FROM settings WHERE key = 'categories'`;

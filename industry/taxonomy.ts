@@ -14,6 +14,7 @@
 export const CATEGORIES = [
   { key: "policy", tagColor: "indigo", label: "政策", feedLabel: "职教政策", section: "政策文件", guide: "教育信息化、AI＋教育／职教的教学改革指导、使用约束、标准与规范：发布、解读、征求意见、生效与实施要求。按实际适用对象和规定事项归类，保留文件阶段；一般行政通知不因发布机构级别高而属于本站政策范围。" },
   { key: "ai-teaching", tagColor: "turquoise", label: "AI 赋能教学", feedLabel: "AI 赋能教学", section: "AI 赋能教学", guide: "与教师任务直接相关的 AI 工具、平台或模型能力发布，以及课堂、实训、备课与评价中的实际应用。通用能力无需已有职业院校部署，但不能把可能教学用途写成已落地；核心是既有工具的方法与演示时归教程，核心是技术影响的论证时归观点。" },
+  { key: "ai-tools", tagColor: "blue", label: "AI 工具", section: "AI 工具与资源", guide: "AI 工具目录、资源导航与专题推荐，介绍已经可用的工具用途、能力或使用条件，覆盖教学、学习、办公、创作与求职辅助。收录或首次发现不代表产品新发布；不能编造上新日期或院校应用。以步骤示例为主归教程，有明确新能力发布或课堂应用证据时归 AI 赋能教学，行业经营新闻不归工具。" },
   { key: "industry", tagColor: "orange", label: "行业", feedLabel: "行业动态", section: "行业动态", guide: "与 AI 教学或教育信息化有关、已经发生的服务开放、交付、合作实施或运行变化。签约揭牌、融资人事和机构表态本身不是教学内容；材料以具体教程、研究或政策要求为核心时归对应类别。新闻由当事人发帖、带有态度，也不因此变成观点。" },
   { key: "skills", tagColor: "violet", label: "技能与竞赛", feedLabel: "技能与竞赛", section: "技能与竞赛", guide: "与 AI 教学、教师应用能力或智能实训有关的竞赛、能力认定安排、结果与规则变化。名次和颁奖不等于可复用方法；核心在讲解参赛教案、提示词、工作流或评价方法时归教程。" },
   { key: "research", tagColor: "green", label: "研究", feedLabel: "研究与报告", section: "研究与报告", guide: "以研究设计、实验、评估数据与发现为核心的 AI 教学、学习评价、教师工作、技术能力或风险研究。区分技术测评与教学效果证据；政策要求解读归政策，以操作流程为主的实测归教程，不能只因出现数字就归研究。" },
@@ -24,7 +25,7 @@ export const CATEGORIES = [
 /** Stable first-tag identities, separate from editable display names. */
 export const CATEGORY_FIRST_TAGS: Readonly<Record<string, string>> = {
   policy: "政策文件", "ai-teaching": "AI赋能教学", industry: "行业动态", skills: "技能竞赛",
-  research: "研究/报告", tip: "教程/实践", opinion: "观点/趋势",
+  research: "研究/报告", tip: "教程/实践", opinion: "观点/趋势", "ai-tools": "AI工具",
 };
 
 /**
@@ -47,7 +48,7 @@ export const ITEM_TYPES = ["policy_release", "ai_in_teaching", "industry_event",
 
 /** 每篇资料的第一个标签必须是这些“分类标签”之一。 */
 export const CATEGORY_TAGS = [
-  "政策文件", "AI赋能教学", "行业动态", "技能竞赛", "研究/报告", "教程/实践", "观点/趋势", "其他",
+  "政策文件", "AI赋能教学", "AI工具", "行业动态", "技能竞赛", "研究/报告", "教程/实践", "观点/趋势", "其他",
 ] as const;
 
 /** 可选的主题标签。 */
@@ -60,6 +61,7 @@ export const ENTITY_TAGS = ["教育部", "人社部", "联合国教科文组织"
 
 /** 模型常写的近义词，统一成词表里的写法。 */
 export const TAG_SYNONYMS: Readonly<Record<string, string>> = {
+  "ai工具": "AI工具", 工具推荐: "AI工具", 工具目录: "AI工具",
   政策: "政策文件", 文件: "政策文件", 通知: "政策文件", 法规: "政策文件", 监管: "政策文件", 规划: "政策文件", 标准: "政策文件",
   "ai": "AI赋能教学", "ai教育": "AI赋能教学", "ai+教育": "AI赋能教学", 智能教育: "AI赋能教学", 教育科技: "AI赋能教学", 数字化: "AI赋能教学", 数字化转型: "AI赋能教学", 智慧教育: "AI赋能教学", 人工智能: "AI赋能教学",
   行业: "行业动态", 动态: "行业动态", 公司动态: "行业动态", 融资: "行业动态", 收购: "行业动态", 投资: "行业动态", 并购: "行业动态", 合作: "行业动态",

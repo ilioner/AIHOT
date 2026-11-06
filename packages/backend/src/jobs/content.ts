@@ -26,7 +26,7 @@ type Step = "extract" | "analyze";
 
 interface Route {
   step: Step;
-  /** Not an editorial source: no analysis; the post goes straight to event grouping as discussion evidence. */
+  /** Heat-only source: the post goes straight to event grouping as discussion evidence. */
   signal: boolean;
   historical: boolean;
 }
@@ -44,7 +44,7 @@ async function route(articleId: string, db: Db): Promise<Route | null> {
     FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
   if (!row) return null;
   const historical = isHistorical(row);
-  const signal = row.participation_mode !== "editorial";
+  const signal = row.participation_mode === "hot_signal";
   const pending = row.body_status === "pending";
   const wantsBody = row.config.fetchPublicContent === true || !!row.config.detail || row.kind === "web_list" || row.kind === "web_search";
   const needsPage = !signal && pageFetchable(row.url, row.kind) && (wantsBody || row.bare);
@@ -67,7 +67,7 @@ export function groupingPriority(a: { signal: boolean; historical: boolean }): n
 /**
  * The one way to hand an article to processing. `attemptTag` makes an explicit re-evaluation a new
  * (paid) request; the same tag reuses its receipt. With `db`, the job commits with the caller's write.
- * Posts of non-editorial sources skip the analysis queue: they only need recording and grouping.
+ * Heat-only sources skip the analysis queue: they only need recording and grouping.
  */
 export async function queueProcessing(articleId: string, opts: { step?: Step; attemptTag?: string; db?: Db } = {}): Promise<string | null> {
   const db = opts.db ?? sql;
@@ -99,13 +99,17 @@ export function needsGrouping(m: { participationMode: string; historical: boolea
 }
 
 /**
- * A post of a non-editorial source: recorded (hot_signal material only feeds heat; isolated material
- * never reaches public surfaces). Returns whether it is discussion evidence to group.
+ * Records a heat-only post. An isolated post left on this queue is routed back to analysis.
  */
 export async function settleNonEditorial(articleId: string): Promise<{ group: boolean }> {
+  const [source] = await sql`SELECT s.participation_mode FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${articleId}`;
+  if (source?.participation_mode === "isolated") {
+    await queueProcessing(articleId);
+    return { group: false };
+  }
   const [row] = await sql<{ participation_mode: string; backfill: boolean; published_at: Date | null; discovered_at: Date }[]>`
     UPDATE articles a SET processing_state = 'skipped', processing_attempts = 0, processing_retry_at = NULL, processing_queued_at = NULL
-    FROM sources s WHERE s.id = a.source_id AND a.id = ${articleId} AND s.participation_mode <> 'editorial'
+    FROM sources s WHERE s.id = a.source_id AND a.id = ${articleId} AND s.participation_mode = 'hot_signal'
     RETURNING s.participation_mode, a.backfill, a.published_at, a.discovered_at`;
   if (!row) return { group: false };
   await publishArticle(articleId);
@@ -134,7 +138,7 @@ export async function processArticle(articleId: string, opts: { attemptTag?: str
 }
 
 async function processRevision(articleId: string, row: NonNullable<Awaited<ReturnType<typeof processingInput>>>, opts: { attemptTag?: string }): Promise<{ state: string }> {
-  if (row.participation_mode !== "editorial") {
+  if (row.participation_mode === "hot_signal") {
     // Normally queued straight for grouping (queueProcessing); an explicit re-evaluation lands here.
     const { group } = await settleNonEditorial(articleId);
     if (group) await enqueue(QUEUES.group, { articleId, signalOnly: true }, { singletonKey: articleId, priority: groupingPriority({ signal: true, historical: row.historical }) });

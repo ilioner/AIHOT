@@ -9,7 +9,7 @@ import { ITEM_COPY } from "@aihot/site";
 import { SameEventBadge, SelectedBadge } from "../../components/ui/Badge";
 import { ScoreLabel } from "../../components/ui/Score";
 import { beijingTime } from "@aihot/contracts/time";
-import { MediaThumbs, SourceLine, StarButton, readTone } from "./parts";
+import { MediaThumbs, SourceDetails, SourceLine, StarButton, readTone } from "./parts";
 import { GroupButton, GroupSources } from "./ReadingGroup";
 import { QuotedLine } from "../item/QuotedPost";
 import { rememberPreview } from "../item/preview";
@@ -39,6 +39,7 @@ export const FeedItem = memo(function FeedItem({ item, group, filters, read = fa
     <article className="relative min-w-0 lg:card lg:card-hover lg:px-[18px] lg:pb-[14px] lg:pt-[15px]" data-item-id={item.id}>
       <header className="flex min-h-[22px] items-center gap-1.5 text-[12.5px] leading-[18px] text-ink-4 lg:min-h-[18px] lg:gap-2">
         <SourceLine item={item} className="text-ink-4" />
+        {!item.publishedAt && <span className="shrink-0">收录</span>}
         {at && (
           <time dateTime={at} className="mono shrink-0 text-[12px] lg:hidden">
             · {beijingTime(at)}
@@ -80,10 +81,12 @@ export const FeedItem = memo(function FeedItem({ item, group, filters, read = fa
       )}
 
       {isX && item.x!.media.length > 0 && <MediaThumbs media={item.x!.media} className="mt-2.5" />}
+      {!isX && !!item.media?.length && <MediaThumbs media={item.media} className="mt-2.5" />}
+      {!isX && <SourceDetails item={item} />}
       {isX && item.x!.quoted?.text && <QuotedLine quoted={item.x!.quoted} />}
 
       {(tags.length > 0 || (showTags && item.category)) && (
-        <div className="relative z-10 mt-2 hidden flex-wrap gap-x-2.5 gap-y-1 text-[12px] text-ink-4 lg:flex">
+        <div className="relative z-10 mt-2 flex flex-wrap gap-x-2.5 gap-y-1 text-[12px] text-ink-4">
           {showTags && item.category && (
             <Link to={`/all?category=${encodeURIComponent(item.category)}`} className="hover:text-accent">
               {item.categoryLabel ?? item.category}

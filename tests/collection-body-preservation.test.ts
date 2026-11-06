@@ -18,12 +18,16 @@ const alternate = "A later page rendering supplies different readable text while
 const publishedAt = new Date(Date.now() - 3600000);
 let presentationNames = ["blocked", "later"];
 let presentationMarkup = "<p>The <b>model</b> is available.</p>";
+let documentRequests = 0;
 const server = http.createServer((req, res) => {
   if (req.url === "/presentation-feed") {
     res.setHeader("content-type", "application/rss+xml");
     return res.end(`<rss version="2.0"><channel><title>Fixture</title>${presentationNames.map(name => `<item><title>${name}</title><link>${base}/${name}</link><pubDate>${publishedAt.toUTCString()}</pubDate><content:encoded><![CDATA[${name === "blocked" ? presentationMarkup : "<p>A second article can still be collected.</p>"} ]]></content:encoded></item>`).join("")}</channel></rss>`);
   }
   res.setHeader("content-type", "text/html");
+  if (req.url === "/pdf-list") return res.end('<ul><li><a href="/pdf-notice">职业教育政策...</a></li><li><a href="/direct.pdf">人工智能教学指南</a></li></ul>');
+  if (req.url === "/pdf-notice") return res.end('<html><body><h1>职业教育政策通知完整名称</h1><iframe src="/viewer.html?file=%2Fpolicy.pdf"></iframe></body></html>');
+  if (req.url?.endsWith(".pdf")) { documentRequests += 1; return res.end("PDF bytes must not be requested"); }
   if (req.url === "/presentation-extract") return res.end(`<html><head><title>Extract recovery</title></head><body><article><p>${original}</p><img src="https://example.com/restored.png"></article></body></html>`);
   if (req.url === "/listing") return res.end(`<ul><li><a href="/complete">Complete article</a></li><li><a href="/pending">Pending article</a></li></ul>`);
   const title = req.url === "/complete" ? "Complete article" : "Pending article";
@@ -33,6 +37,20 @@ await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 config.allowPrivateNetworkFetch = true;
 after(async () => { await new Promise<void>(resolve => server.close(() => resolve())); await stopBoss(); await closeDb(); });
+
+test("PDF notices retain full names, document links and discovery time across recollection without fetching PDFs", async () => {
+  const sourceId = `pdf-notices-${T}`;
+  await sql`INSERT INTO sources(id,name,kind,config,tier,participation_mode,cursor) VALUES (${sourceId},'PDF notices','web_list',${sql.json({ url: base + "/pdf-list", itemSelector: "li", titleSelector: "a", detail: { titleSelector: "h1", titleAuthoritative: true, maxFetches: 5 } })},'T1','editorial',${sql.json({ initializedAt: new Date().toISOString() })})`;
+  assert.equal((await collectSource(sourceId)).status, "ok");
+  const before = await sql`SELECT id,title,discovered_at,timeline_at,revision,body_status,raw->'sourceMetadata'->>'documentUrl' AS pdf FROM articles WHERE source_id=${sourceId} ORDER BY url`;
+  assert.equal(before.length, 2);
+  assert.ok(before.some(row => row.title === "职业教育政策通知完整名称"));
+  assert.ok(before.every(row => row.body_status === "none" && row.pdf.endsWith(".pdf")));
+  assert.equal((await collectSource(sourceId)).revised, 0);
+  const after = await sql`SELECT id,title,discovered_at,timeline_at,revision,body_status,raw->'sourceMetadata'->>'documentUrl' AS pdf FROM articles WHERE source_id=${sourceId} ORDER BY url`;
+  assert.deepEqual(after, before);
+  assert.equal(documentRequests, 0);
+});
 
 test("publication metadata recovery keeps a confirmed body and only fills an unconfirmed body", async () => {
   const sourceId = `body-preservation-${T}`;

@@ -24,6 +24,8 @@ import type { SourceRow } from "../sources/types.ts";
 import { computeHotRanking, storedHotRanking } from "../events/hot.ts";
 import { audit, auditHistory, Conflict } from "../audit.ts";
 import { sha256, stableJson } from "../lib/ids.ts";
+import { contentStatus } from "./content-status.ts";
+import { sourceMetadata } from "@aihot/contracts/source-metadata";
 
 interface PublicationDateMaterial {
   id: string;
@@ -181,7 +183,7 @@ export async function searchContent(q: string): Promise<BeforeJson<AdminContentR
   if (!term) return [];
   const read = (where: ReturnType<typeof sql>) => sql<BeforeJson<AdminContentRow>[]>`
     SELECT a.id, coalesce(p.title, a.title) AS title, a.url, s.name AS source, a.discovered_at, a.processing_state,
-           p.visibility, p.selected, p.score
+           p.visibility, p.selected, p.score, ${contentStatus()} AS status_reason
     FROM articles a JOIN sources s ON s.id = a.source_id LEFT JOIN publications p ON p.article_id = a.id
     WHERE ${where} ORDER BY a.discovered_at DESC, a.id LIMIT 50`;
   // Exact lookups use the identity indexes; a title search must not force a full-table join for an ID.
@@ -200,9 +202,11 @@ export async function contentChain(id: string): Promise<Chain | null> {
   const [article] = await sql<Chain["article"][]>`
     SELECT a.id, a.source_id, a.url, a.identity_key, a.title, a.author, a.language, a.published_at, a.published_at_claim, a.discovered_at,
            a.timeline_at, a.backfill, a.body_status, a.revision, a.processing_state, a.processing_error, a.grouped_at, length(a.body_text) AS body_chars,
-           s.name AS source_name, s.kind AS source_kind, s.tier, s.participation_mode, s.site_fulltext, s.syndicate_fulltext
-    FROM articles a JOIN sources s ON s.id = a.source_id WHERE a.id = ${id}`;
+           s.name AS source_name, s.kind AS source_kind, s.tier, s.participation_mode, s.site_fulltext, s.syndicate_fulltext,
+           a.raw->'sourceMetadata' AS source_metadata, a.media, ${contentStatus()} AS status_reason
+    FROM articles a JOIN sources s ON s.id = a.source_id LEFT JOIN publications p ON p.article_id = a.id WHERE a.id = ${id}`;
   if (!article) return null;
+  article.source_metadata = sourceMetadata(article.source_metadata);
   const [discoveries, revisions, analyses, publication, override, ledger, membership, decisions, deliveries, history] = await Promise.all([
     sql<Chain["discoveries"]>`SELECT source_id, via, discovered_at FROM article_discoveries WHERE article_id = ${id} ORDER BY discovered_at`,
     sql<Chain["revisions"]>`SELECT revision, title, content_hash, created_at FROM article_revisions WHERE article_id = ${id} ORDER BY revision DESC LIMIT 10`,
@@ -305,7 +309,7 @@ export async function overrideFields(id: string, input: { fields: unknown; clear
   z.object({ reason: z.string().trim().min(1), version: z.number().int().nonnegative(), clear: z.array(z.string()).optional() }).parse(input);
   const fields = FieldsSchema.parse(input.fields ?? {});
   const published = await sql.begin(async (tx) => {
-    if (fields.category && !(await loadCategories(tx)).some(c => c.key === fields.category)) throw new Error("invalid category");
+    if (fields.category && !(await loadCategories(tx)).some(c => c.key === fields.category)) throw Object.assign(new Error("invalid category"), { statusCode: 400 });
     const before = await overrideRow(id, tx);
     if (before.version !== input.version) throw new Conflict(STALE);
     const next: Record<string, unknown> = { ...before.fields, ...fields };

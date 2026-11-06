@@ -14,7 +14,7 @@ import { ScoreLabel, shownScore } from "../components/ui/Score";
 import { PillTabs } from "../components/ui/Tabs";
 import { ArticleLayout, RailSection, useContainedScroll } from "../components/ui/Page";
 import { Menu, MenuItem } from "../components/ui/Menu";
-import { StarButton } from "../features/feed/parts";
+import { SourceDetails, SourceLine, StarButton } from "../features/feed/parts";
 import { GroupButton, GroupSources } from "../features/feed/ReadingGroup";
 import { StoryFollowups } from "../features/item/StoryFollowups";
 import { MediaGallery } from "../features/item/MediaGallery";
@@ -474,7 +474,7 @@ function ItemView({ item }: { item: SiteItemDetail }) {
         <div className="sticky top-0 z-20 -mx-2 hidden bg-bg/95 px-2 py-1.5 backdrop-blur lg:block 2xl:hidden">{backButton}</div>
         <article className="pb-6 pt-3 lg:pt-2 2xl:pt-1">
           <div className={`flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[13px] text-ink-3 2xl:hidden ${isX ? "" : "mb-3"}`}>
-            <span className="font-semibold text-ink-2">{isX ? item.x!.authorName : item.source.name}</span>
+            <SourceLine item={item} className="font-semibold text-ink-2" />
             {isX && <span>· @{item.x!.handle} · X</span>}
             {item.author && !isX && <span>· {item.author}</span>}
             <span>·</span>
@@ -494,11 +494,20 @@ function ItemView({ item }: { item: SiteItemDetail }) {
           </div>
           {!isX && <h1 data-page-title="" className="text-[26px] font-bold leading-[1.38] tracking-[-0.01em] text-ink lg:text-[32px] lg:leading-[1.34] xl:text-[36px] xl:leading-[1.3]">{item.title}</h1>}
           {!isX && item.originalTitle && <p className="mt-2.5 text-[14px] leading-relaxed text-ink-4">{item.originalTitle}</p>}
+          {!isX && <SourceDetails item={item} />}
+          {!isX && !!item.media?.length && <MediaGallery media={item.media} postUrl={item.links.original} />}
 
           {item.summary && (!isX || item.summary.replace(/\s+/g, " ").trim() !== item.title) && (
             <section className={isX ? "mt-4" : "mt-7 xl:mt-8"}>
               <div className="mb-2 text-[12px] font-semibold text-accent">{summaryOnly ? "摘要" : "AI 导读"}</div>
               <p className="text-[18px] leading-[1.7] text-ink xl:text-[20px] xl:leading-[1.7]">{item.summary}</p>
+            </section>
+          )}
+
+          {item.notes && (
+            <section className="mt-7 border-t border-line pt-4">
+              <div className="mb-2 text-[12px] font-semibold text-accent">原文笔记</div>
+              <div className="whitespace-pre-wrap text-[15px] leading-[1.8] text-ink-2">{item.notes}</div>
             </section>
           )}
 

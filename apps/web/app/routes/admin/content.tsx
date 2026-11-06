@@ -3,7 +3,7 @@ import { Form, Link, useNavigate, useSearchParams } from "react-router";
 import type { Route } from "./+types/content";
 import type { AdminContentRow, AdminContentSearch } from "@aihot/contracts/admin";
 import { adminGet } from "../../lib/admin.server";
-import { VISIBILITY_LABEL } from "../../features/admin/labels";
+import { PROCESSING_LABEL, VISIBILITY_LABEL } from "../../features/admin/labels";
 import { AdminPage, Badge, Button, Card, DataTable, Empty, Input, Time } from "../../features/admin/ui";
 
 
@@ -51,8 +51,8 @@ export default function Content({ loaderData }: Route.ComponentProps) {
                 render: (r) => (
                   <span className="flex flex-wrap gap-1">
                     {r.selected && <Badge tone="accent">精选</Badge>}
-                    {r.visibility && <Badge tone={r.visibility === "public" ? "muted" : "warn"}>{VISIBILITY_LABEL[r.visibility] ?? r.visibility}</Badge>}
-                    {!r.visibility && <Badge>{r.processing_state}</Badge>}
+                    {(r.status_reason || r.visibility) && <Badge tone={r.visibility === "public" ? "muted" : "warn"}>{r.status_reason ?? VISIBILITY_LABEL[r.visibility!] ?? r.visibility}</Badge>}
+                    <Badge>{PROCESSING_LABEL[r.processing_state] ?? r.processing_state}</Badge>
                   </span>
                 ),
               },

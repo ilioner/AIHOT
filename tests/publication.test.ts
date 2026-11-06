@@ -65,6 +65,45 @@ async function get(url: string, headers: Record<string, string> = {}) {
   return { status: res.statusCode, body: res.body, etag: res.headers.etag as string | undefined };
 }
 
+test("a passed title-only notice keeps collection time and source presentation across public listings", async () => {
+  const discovered = new Date(Date.now() - 120_000);
+  const title = `政策名称-${T}`;
+  const url = `https://example.com/${T}-notice`;
+  const metadata = { title, itemUrl: url, originalUrl: `${url}/original`, catalogUrl: `${url}/catalog`,
+    documentUrl: `${url}/policy.pdf`, coverUrl: `${url}/cover.png`, iconUrl: `${url}/icon.png`, categories: ["通知公告"], tags: ["职教"] };
+  const { articleId: id } = await upsertMaterial({ sourceId: SOURCE, url, title, bodyStatus: "none", discoveredAt: discovered, sourceMetadata: metadata, via: "fetch" });
+  await sql`UPDATE sources SET icon_url=${`${url}/source-icon.png`} WHERE id=${SOURCE}`;
+  await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,selected) VALUES (${id},1,'rule','pass',true)`;
+  await sql`UPDATE articles SET grouping_status='complete' WHERE id=${id}`;
+  await publishArticle(id);
+  const detail = JSON.parse((await get(`/api/site/items/${id}`)).body);
+  assert.equal(detail.title, title);
+  assert.equal(detail.summary, null);
+  assert.equal(detail.publishedAt, null);
+  assert.equal(detail.discoveredAt, discovered.toISOString());
+  assert.equal(detail.selected, false);
+  assert.equal(detail.sourceMetadata.documentUrl, metadata.documentUrl);
+  assert.deepEqual(detail.sourceMetadata.tags, ["职教"]);
+  assert.ok(detail.media.length && detail.source.iconUrl);
+  for (const prefix of ["/api/site/pool?q=", "/api/v1/items?mode=all&q=", "/api/v1/agent/search?q="]) {
+    assert.ok((await get(`${prefix}${encodeURIComponent(title)}`)).body.includes(id), prefix);
+  }
+  const pool = JSON.parse((await get(`/api/site/pool?q=${encodeURIComponent(title)}`)).body);
+  assert.equal(pool.items[0].sourceMetadata.itemUrl, url);
+  assert.ok(pool.items[0].media.length && pool.items[0].source.iconUrl);
+  await upsertMaterial({ sourceId: SOURCE, url, title, bodyStatus: "none", sourceMetadata: metadata, via: "fetch" });
+  await publishArticle(id);
+  assert.equal(JSON.parse((await get(`/api/site/items/${id}`)).body).timelineAt, detail.timelineAt);
+  for (const relevance of ["unknown", "block"]) {
+    await sql`UPDATE analyses SET relevance=${relevance} WHERE article_id=${id}`;
+    await publishArticle(id);
+    for (const prefix of ["/api/site/pool?q=", "/api/v1/items?mode=all&q=", "/api/v1/agent/search?q="]) {
+      const body = (await get(`${prefix}${encodeURIComponent(title)}`)).body;
+      assert.equal(body.includes(id), relevance === "unknown", `${relevance}: ${prefix}`);
+    }
+  }
+});
+
 // Failure modes: a revoked score falls back to the erroneous model score, zero is treated as
 // missing, republishing loses a correction, invalid scores or stale edits alter public state,
 // or removing a correction cannot restore the saved model result without paying again.
@@ -381,6 +420,28 @@ test("a relevance BLOCK removes an item from every public exit, regardless of so
     await setVisibility(id, { visibility: "withdrawn", reason: "editor withdrawal", version: 1 }, "test");
     await publishArticle(id);
     assert.equal((await get(detailUrl)).status, 404, "an explicit editorial withdrawal remains authoritative");
+  }
+});
+
+test("blocked effective tags withdraw historical and manually corrected content", async () => {
+  const id = await article();
+  await publishArticle(id, released());
+  assert.equal((await get(`/api/site/items/${id}`)).status, 200);
+  await sql`UPDATE analyses SET tags = ${["政策文件", "其他"]} WHERE article_id = ${id}`;
+  await publishArticle(id);
+  assert.equal((await get(`/api/site/items/${id}`)).status, 404, "old passing analyses obey the tag rule on rebuild");
+
+  await overrideFields(id, { fields: { tags: ["政策文件"], selected: true }, reason: "纠正标签", version: 0 }, "test");
+  assert.equal((await get(`/api/site/items/${id}`)).status, 200, "effective corrected tags replace historical tags");
+  await overrideFields(id, { fields: { tags: ["政策文件", " #其他 "], selected: true }, reason: "标记其他", version: 1 }, "test");
+  await setVisibility(id, { visibility: "public", reason: "尝试公开", version: 2 }, "test");
+  const [published] = await sql`SELECT visibility, eligible, selected FROM publications WHERE article_id = ${id}`;
+  assert.deepEqual([published!.visibility, published!.eligible, published!.selected], ["withdrawn", false, false]);
+  for (const path of [`/api/site/items/${id}`, `/api/v1/items/${id}`, `/items/${id}/markdown`]) {
+    assert.equal((await get(path)).status, 404, path);
+  }
+  for (const path of ["/api/v1/items?mode=all", "/api/v1/selected/snapshot?fields=minimal&limit=1000", "/feed.xml", "/feed/all.xml"]) {
+    assert.ok(!(await get(path)).body.includes(id), path);
   }
 });
 

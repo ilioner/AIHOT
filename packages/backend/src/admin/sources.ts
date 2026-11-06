@@ -21,6 +21,7 @@ import { fetchWebList } from "../sources/web-list.ts";
 import { fetchWebSearch } from "../sources/web-search.ts";
 import { fetchXSearch } from "../sources/x.ts";
 import { xHandle } from "../sources/account.ts";
+import { contentStatus } from "./content-status.ts";
 
 
 export interface SourceListFilters {
@@ -66,8 +67,8 @@ export async function sourceDetail(id: string): Promise<BeforeJson<AdminSourceDe
   const [runs, items, [stats], history, [republish]] = await Promise.all([
     sql<BeforeJson<AdminSourceDetail["runs"][number]>[]>`SELECT id, started_at, finished_at, status, found_count, new_count, error, detail FROM fetch_runs WHERE source_id = ${id} ORDER BY started_at DESC LIMIT 30`,
     sql<BeforeJson<AdminSourceDetail["items"][number]>[]>`
-    SELECT a.id, a.title, a.url, a.discovered_at, a.published_at, a.processing_state, p.selected, p.visibility, p.title AS title_zh
-    FROM articles a LEFT JOIN publications p ON p.article_id = a.id WHERE a.source_id = ${id} ORDER BY a.discovered_at DESC LIMIT 30`,
+    SELECT a.id, a.title, a.url, a.discovered_at, a.published_at, a.processing_state, p.selected, p.visibility, p.title AS title_zh, ${contentStatus()} AS status_reason
+    FROM articles a JOIN sources s ON s.id = a.source_id LEFT JOIN publications p ON p.article_id = a.id WHERE a.source_id = ${id} ORDER BY a.discovered_at DESC LIMIT 30`,
     sql<AdminSourceDetail["stats"][]>`
     SELECT count(*)::int AS total, count(*) FILTER (WHERE a.discovered_at > now() - interval '7 days')::int AS last7d,
            (SELECT count(*)::int FROM publications p WHERE p.source_id = ${id} AND p.selected) AS selected

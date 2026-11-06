@@ -27,7 +27,7 @@ const X_SOURCE = `test-analyze-x-${T}`;
 
 interface Req { step: AnalysisStep; marker: string; user: string }
 const requests: Req[] = [];
-const MARKERS = ["CLEAR", "RESCUE", "LOW", "OFFTOPIC", "STOCK-QUOTE", "BARE", "VAGUE", "THIN", "SENSITIVE", "推文", "WORDY", "REFUSAL", "RENUMBER", "UNMENDED"];
+const MARKERS = ["CLEAR", "RESCUE", "LOW", "OFFTOPIC", "STOCK-QUOTE", "BARE", "VAGUE", "THIN", "SENSITIVE", "推文", "WORDY", "REFUSAL", "RENUMBER", "UNMENDED", "UNCLASSIFIED", "MIXED-TAGS", "FALLBACK-TAGS"];
 // The scores sit a few points around the pack's T1 threshold and understand floor, so each case means
 // the same after a site recalibrates them: selected when the two add up to 2 × T1, written like a
 // selected item when they add up to more than 2 × FLOOR, translated otherwise.
@@ -36,6 +36,7 @@ const FLOOR = UNDERSTAND_FLOOR;
 const scoreAnswers: Record<string, number[]> = {
   CLEAR: [T1 + 3, T1 - 1], RESCUE: [FLOOR + 1, FLOOR], LOW: [FLOOR, FLOOR - 1], THIN: [T1, T1], SENSITIVE: [T1, T1], 推文: [FLOOR, FLOOR],
   BARE: [FLOOR - 2, FLOOR - 4], VAGUE: [T1, T1 + 2], WORDY: [T1, T1], REFUSAL: [T1, T1], RENUMBER: [T1, T1], UNMENDED: [T1, T1],
+  UNCLASSIFIED: [T1, T1], "MIXED-TAGS": [T1, T1], "FALLBACK-TAGS": [T1, T1],
 };
 
 const WORDY = ["WORDY", "REFUSAL", "RENUMBER", "UNMENDED"];
@@ -64,7 +65,7 @@ const provider = await stub((_hit, req) => {
     if (marker === "SENSITIVE") return new Reply(400, { contentFilter: [{ level: 1, role: "user" }], error: { code: "1301", message: "系统检测到输入或生成内容可能包含不安全或敏感内容" } });
     return answer({ itemType: "policy_release", authorRole: "principal", tags: ["政策文件", "校企合作", "产教融合", "不存在的标签"], editorialJudgment: `理由 ${marker}`, titleZh: `理解标题 ${marker}`, summaryZh: `理解摘要 ${marker}。第二句补充一个关键数字。` });
   }
-  if (step === "structure") return answer({ category: "policy", tags: ["政策文件", "专业建设"], subjects: ["tencent", "unknown-co"], scope: "single", fact: { title: `事实 ${marker}`, subject: "某部委", action: "发布", object: "文件", occurredAt: null, evidence: "a ministry released a vocational education policy", conditions: [] } });
+  if (step === "structure") return answer({ category: "policy", tags: marker === "UNCLASSIFIED" ? ["#其他"] : marker === "MIXED-TAGS" ? ["政策文件", "其他"] : marker === "FALLBACK-TAGS" ? [] : ["政策文件", "专业建设"], subjects: ["tencent", "unknown-co"], scope: "single", fact: { title: `事实 ${marker}`, subject: "某部委", action: "发布", object: "文件", occurredAt: null, evidence: "a ministry released a vocational education policy", conditions: [] } });
   return answer(`title_zh: 翻译标题 ${marker}\nsummary_zh: 翻译摘要 ${marker}。第二句补充影响。`);
 });
 pointModels(provider.url);
@@ -240,6 +241,18 @@ test("the prefilter's BLOCK stops everything; UNKNOWN with material goes on like
   const bare = await analyzeArticle(await article("BARE", { bodyText: null, excerpt: null, bodyStatus: "none" }));
   assert.deepEqual([bare!.output!.relevance, bare!.output!.selected, bare!.output!.score], ["unknown", false, null]);
   assert.deepEqual(calls("BARE"), []);
+});
+
+test("blocked structure tags override a passing prefilter and selected scores", async () => {
+  for (const marker of ["UNCLASSIFIED", "MIXED-TAGS", "FALLBACK-TAGS"]) {
+    const id = await article(marker);
+    const result = await analyzeArticle(id);
+    assert.deepEqual([result!.output!.relevance, result!.output!.selected], ["block", false]);
+    const stored = await row(id);
+    assert.deepEqual([stored.relevance, stored.selected, stored.output.prefilter.label], ["block", false, "PASS"]);
+    assert.ok(stored.tags.includes("其他"));
+    assert.equal((await sql`SELECT processing_state FROM articles WHERE id = ${id}`)[0]!.processing_state, "blocked");
+  }
 });
 
 test("a feed summary alone: the article page is fetched first, then the whole article is judged", async () => {

@@ -162,7 +162,9 @@ export function fromHtml(html: string, base: string, source: SourceRow): Candida
     if (isSignInUrl(url)) continue;
     if (!sectionsArePosts && listingItself(url, listing)) continue;
     const titleEl = c.titleSelector ? (el.is(c.titleSelector) ? el : el.find(c.titleSelector).first()) : linkEl;
-    const title = collapseWhitespace(titleEl.text() || linkEl.attr("title") || "");
+    const label = collapseWhitespace(titleEl.text());
+    const attribute = collapseWhitespace(titleEl.attr("title") || linkEl.attr("title") || "");
+    const title = attribute && (!label || attribute.startsWith(label.replace(/(?:\.{3}|…)\s*$/, ""))) ? attribute : label;
     if (!title) continue;
     let date: PublicationDate = { publishedAt: null, publicationTime: null };
     if (c.publishedAtSelector) {
@@ -174,7 +176,12 @@ export function fromHtml(html: string, base: string, source: SourceRow): Candida
       date = readPublicationDate(m?.[1], c.publishedAtUtcOffset);
     }
     seen.add(url);
-    out.push({ url, title, ...date });
+    const image = el.find("img").first();
+    const cover = absolute(image.attr("data-src") || image.attr("src"), base);
+    out.push({ url, title, ...date,
+      ...(cover ? { media: [{ kind: "image" as const, url: cover }] } : {}),
+      sourceMetadata: { title, itemUrl: url, originalUrl: url, categories: [], tags: [], coverUrl: cover },
+    });
   }
   return out;
 }
@@ -356,7 +363,7 @@ export interface DetailNeed {
  * text ("Published Time: …", "# Heading"), so that paid rendering is bought only when such a rule is
  * needed; selectors and page metadata read the page's own HTML.
  */
-export async function fetchDetail(url: string, source: SourceRow, need: DetailNeed): Promise<PublicationDate & { title: string | null; summary: string | null; body: ExtractedBody | null }> {
+export async function fetchDetail(url: string, source: SourceRow, need: DetailNeed): Promise<PublicationDate & { title: string | null; summary: string | null; body: ExtractedBody | null; documentUrl?: string }> {
   const d = source.config.detail ?? {};
   const offset = articleUtcOffset(source.config);
   const jinaListing = String(source.config.url ?? "").startsWith(JINA_PREFIX);
@@ -400,9 +407,18 @@ export async function fetchDetail(url: string, source: SourceRow, need: DetailNe
 
   // The body last, from the same document: Readability changes what it reads.
   let body: ExtractedBody | null = null;
+  let documentUrl: string | undefined;
+  if ($) {
+    for (const element of $("iframe[src], embed[src], object[data]").toArray()) {
+      const embedded = absolute($(element).attr("src") || $(element).attr("data"), url);
+      if (!embedded) continue;
+      const candidate = absolute(new URL(embedded).searchParams.get("file") || embedded, url);
+      if (candidate && /\.pdf$/i.test(new URL(candidate).pathname)) { documentUrl = candidate; break; }
+    }
+  }
   if (need.body && page?.whole) {
     try { body = readableDocument(page.document, page.url, pageRules(source.config)); }
     catch { /* A failed extraction must not discard the detail metadata. */ }
   }
-  return { ...date, title, summary, body };
+  return { ...date, title, summary, body, ...(documentUrl && !body ? { documentUrl } : {}) };
 }

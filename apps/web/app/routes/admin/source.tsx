@@ -6,7 +6,7 @@ import { REPLACEABLE_SOURCE_KINDS, type AdminSource, type AdminSourceDetail, typ
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
 import { bj, duration, num } from "../../features/admin/format";
-import { HEALTH_LABEL, KIND_LABEL, MODE_LABEL, TIER_LABEL, VISIBILITY_LABEL } from "../../features/admin/labels";
+import { HEALTH_LABEL, KIND_LABEL, MODE_LABEL, TIER_LABEL, VISIBILITY_LABEL, PROCESSING_LABEL } from "../../features/admin/labels";
 import { AdminPage, Badge, Button, Card, DataTable, Dot, Empty, Field, healthTone, Input, Json, KV, ReasonDialog, Select, Stat, Textarea, Time } from "../../features/admin/ui";
 
 
@@ -231,7 +231,7 @@ export default function SourceDetail({ loaderData }: Route.ComponentProps) {
                     <Link to={`/admin/content/${r.id}`} className="line-clamp-2 min-w-[260px] text-ink hover:text-accent">{r.title_zh || r.title}</Link>
                   ),
                 },
-                { key: "s", label: "状态", render: (r) => <span className="flex gap-1">{r.selected && <Badge tone="accent">精选</Badge>}{r.visibility && r.visibility !== "public" && <Badge tone="warn">{VISIBILITY_LABEL[r.visibility]}</Badge>}<Badge>{r.processing_state}</Badge></span> },
+                { key: "s", label: "状态", render: (r) => <span className="flex gap-1">{r.selected && <Badge tone="accent">精选</Badge>}{(r.status_reason || r.visibility && r.visibility !== "public") && <Badge tone="warn">{r.status_reason ?? VISIBILITY_LABEL[r.visibility!]}</Badge>}<Badge>{PROCESSING_LABEL[r.processing_state] ?? r.processing_state}</Badge></span> },
                 { key: "d", label: "发现", render: (r) => <Time at={r.discovered_at} /> },
               ]}
             />

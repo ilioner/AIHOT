@@ -1,10 +1,13 @@
 // Tag normalization and company identity over the industry pack's vocabulary (industry/taxonomy.ts),
 // which the topics (industry/topics.json) are built on.
 import { CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, RELEASE, TAG_SYNONYMS, TOPIC_TAGS } from "@aihot/industry/taxonomy";
+import { SELECTION } from "@aihot/industry/selection";
 
 export { CATEGORY_TAGS, ENTITIES, ENTITY_TAGS, ITEM_TYPES, TOPIC_TAGS } from "@aihot/industry/taxonomy";
 
 import { DEFAULT_CATEGORIES, type CategoryDefinition } from "@aihot/contracts/taxonomy";
+
+export const hasBlockedTag = (tags: readonly string[]) => tags.some(tag => SELECTION.blockedTags.includes(tag.trim().replace(/^#/, "").trim()));
 
 /**
  * Known tags only, synonyms mapped, duplicates dropped, at most six; the category tag goes first, and a

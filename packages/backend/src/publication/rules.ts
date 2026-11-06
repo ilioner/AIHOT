@@ -25,15 +25,13 @@ export function channelOf(sourceKind: string, hasXPost: boolean): "x" | "news" {
   return sourceKind === "x_search" || hasXPost ? "x" : "news";
 }
 
-/** Public pool (/all): editorial sources, AI relevant, with usable copy or an original post. */
+/** Public pool (/all): editorial sources with a title unless explicitly blocked. */
 export function isPoolEligible(input: {
   participationMode: string;
   relevance: string | null;
   title: string | null;
-  summary: string | null;
-  originalPost?: boolean;
 }): boolean {
-  return input.participationMode === "editorial" && input.relevance === "pass" && !!input.title && (!!input.summary || input.originalPost === true);
+  return input.participationMode === "editorial" && input.relevance !== "block" && !!input.title?.trim();
 }
 
 /**

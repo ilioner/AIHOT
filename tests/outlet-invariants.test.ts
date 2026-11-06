@@ -16,36 +16,41 @@ const key = tag();
 const app = await buildApp();
 after(async () => { await app.close(); await stopBoss(); await closeDb(); });
 
-async function fixture(name: string, mode = "editorial", relevance = "pass") {
+async function fixture(name: string, mode = "editorial", relevance = "pass", archive = false) {
   const source = `outlet-${tag()}`;
   await sql`INSERT INTO sources (id, name, kind, tier, participation_mode, next_fetch_at)
     VALUES (${source}, ${name}, 'rss', 'T1', ${mode}, '2100-01-01')`;
-  // Found, published and released a minute ago: a rolling window that ends at the reader's clock holds it.
+  // Live items were found, published and released a minute ago; archives have no known publication date.
   const minuteAgo = new Date(Date.now() - 60_000);
   const { articleId: id } = await upsertMaterial({ sourceId: source, url: `https://example.org/${source}`,
-    title: "Source article", bodyText: "Confirmed material", bodyStatus: "ok", publishedAt: minuteAgo, discoveredAt: minuteAgo, via: "fetch" });
+    title: "Source article", bodyText: "Confirmed material", bodyStatus: "ok", publishedAt: archive ? null : minuteAgo, discoveredAt: minuteAgo, via: "fetch" });
   await sql`INSERT INTO analyses (article_id, input_revision, origin, relevance, title_zh, summary_zh, category, selected, score)
     VALUES (${id}, 1, 'rule', ${relevance}, '对外标题', '对外摘要', 'policy', true, 90)`;
-  await publishArticle(id, { releasedAt: minuteAgo });
+  await publishArticle(id, archive ? {} : { releasedAt: minuteAgo });
   return id;
 }
 
 test("indexing and sitemap require a readable source, while manual archive indexing remains available", async () => {
-  const archive = await fixture("Archived editorial", "editorial", "block");
+  const archive = await fixture("Archived editorial", "editorial", "pass", true);
+  const blocked = await fixture("Blocked editorial", "editorial", "block");
   const signal = await fixture("Heat signal", "hot_signal");
   const future = await fixture("Not released yet");
-  for (const id of [archive, signal]) await setSeoIndexed(id, { indexed: true, reason: "local indexing check" }, "test");
+  const [archived] = await sql`SELECT eligible, selected, indexable FROM publications WHERE article_id = ${archive}`;
+  assert.deepEqual({ ...archived }, { eligible: true, selected: false, indexable: false }, "an undated archive is listed at its discovery time without becoming selected or indexed");
+  for (const id of [archive, blocked, signal]) await setSeoIndexed(id, { indexed: true, reason: "local indexing check" }, "test");
   assert.equal((await app.inject(`/api/site/items/${archive}`)).statusCode, 200);
-  assert.equal((await app.inject(`/api/site/items/${signal}`)).statusCode, 404);
-  const [stored] = await sql`SELECT indexable FROM publications WHERE article_id = ${signal}`;
-  assert.equal(stored!.indexable, false, "unreadable sources must not acquire an indexable publication");
+  for (const id of [blocked, signal]) {
+    assert.equal((await app.inject(`/api/site/items/${id}`)).statusCode, 404);
+    const [stored] = await sql`SELECT indexable FROM publications WHERE article_id = ${id}`;
+    assert.equal(stored!.indexable, false, "blocked content and unreadable sources must not acquire an indexable publication");
+  }
   // Existing rows may carry an old indexability decision: the read layer must enforce live scope too.
-  await sql`UPDATE publications SET indexable = true WHERE article_id = ${signal}`;
+  await sql`UPDATE publications SET indexable = true WHERE article_id IN (${blocked}, ${signal})`;
   await sql`UPDATE publications SET visible_after = now() + interval '1 day' WHERE article_id = ${future}`;
   const sitemap = await app.inject("/sitemap.xml");
   assert.equal(sitemap.statusCode, 200);
   assert.ok(sitemap.body.includes(`/items/${archive}</loc>`), "a readable archive can be explicitly indexed outside the pool");
-  assert.ok(!sitemap.body.includes(`/items/${signal}</loc>`), "a stale index bit cannot publish a 404 URL");
+  for (const id of [blocked, signal]) assert.ok(!sitemap.body.includes(`/items/${id}</loc>`), "a stale index bit cannot publish a 404 URL");
   assert.ok(!sitemap.body.includes(`/items/${future}</loc>`), "an unreleased selection cannot reach discovery");
 });
 

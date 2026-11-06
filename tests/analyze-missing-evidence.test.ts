@@ -15,7 +15,7 @@ const provider = await stub((_hit, request) => {
   steps.push(step);
   const output = step === "prefilter" ? { label, reason: "fixture" }
     : step === "score" ? { attentionScore: SELECTING_SCORE }
-    : step === "structure" ? { scope: "unknown", category: "model", tags: [], subjects: [], fact: null }
+    : step === "structure" ? { scope: "unknown", category: "policy", tags: ["政策文件"], subjects: [], fact: null }
     : { itemType: "policy_release", authorRole: "principal", titleZh: "教育部印发新文件", summaryZh: "来源确认教育部印发新文件。", bodyZh: "来源确认教育部印发新文件。", tags: [], editorialJudgment: "fixture" };
   return { choices: [{ message: { content: JSON.stringify(output) } }] };
 });
@@ -40,7 +40,15 @@ test("title-only articles wait for evidence without a model call (no prefilter l
   assert.equal(out.selected, false);
   assert.equal(out.titleZh, "");
   assert.equal(out.summaryZh, "");
-  assert.equal(isPoolEligible({ participationMode: "editorial", relevance: out.relevance, title: out.titleZh, summary: out.summaryZh }), false);
+  assert.equal(isPoolEligible({ participationMode: "editorial", relevance: out.relevance, title: out.titleZh }), false);
+});
+
+test("an explicit BLOCK is the only relevance result excluded from the editorial pool", () => {
+  for (const relevance of ["pass", "unknown", null]) {
+    assert.equal(isPoolEligible({ participationMode: "editorial", relevance, title: "有标题" }), true, relevance ?? "null");
+  }
+  assert.equal(isPoolEligible({ participationMode: "editorial", relevance: "block", title: "有标题" }), false);
+  assert.equal(isPoolEligible({ participationMode: "hot_signal", relevance: "unknown", title: "有标题" }), false);
 });
 
 test("real body, feed excerpt and quoted text still receive both scores and writing", async (t) => {
@@ -67,7 +75,7 @@ test("an empty or link-only original post keeps scoring and verbatim publication
     assert.equal(run.writing?.kind, "verbatim");
     assert.equal(out.relevance, "pass");
     assert.equal(out.selected, true);
-    assert.equal(isPoolEligible({ participationMode: "editorial", relevance: out.relevance, title: out.titleZh, summary: out.summaryZh, originalPost: true }), true);
+    assert.equal(isPoolEligible({ participationMode: "editorial", relevance: out.relevance, title: out.titleZh }), true);
   });
 });
 
@@ -80,4 +88,20 @@ test("a later material revision can be scored after the title-only revision wait
   assert.equal(steps.filter((step) => step === "score").length, 2);
   assert.equal(out.relevance, "pass");
   assert.equal(out.selected, true);
+});
+
+test("PDF notices classify their name without scoring, writing or reading the document", async () => {
+  const input = article({ sourceMetadata: { title: "教育部印发新文件", itemUrl: "https://example.org/news", categories: [], tags: [], documentUrl: "https://example.org/policy.pdf" } });
+  for (const judgement of ["PASS", "BLOCK", "UNKNOWN"]) {
+    label = judgement;
+    steps.length = 0;
+    const out = normalizeAnalysis(await runFresh(input));
+    assert.deepEqual(steps, judgement === "PASS" ? ["prefilter", "structure"] : ["prefilter"]);
+    assert.equal(out.relevance, judgement.toLowerCase());
+    assert.equal(out.selected, false);
+    assert.equal(out.score, null);
+    assert.equal(out.summaryZh, "");
+    assert.equal(isPoolEligible({ participationMode: "editorial", relevance: out.relevance, title: out.titleZh }), judgement !== "BLOCK");
+  }
+  label = "PASS";
 });

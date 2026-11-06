@@ -2,6 +2,36 @@
   "$comment": "示范信源：首次启动时导入（scripts/seed.ts），已存在的不会被覆盖。之后在后台“信源”里新建、修改和暂停。字段说明见 docs/customize.md。",
   "sources": [
     {
+      "id": "catalog-aibase", "name": "AIbase · AI 产品库", "kind": "external", "config": {},
+      "tier": "T2", "participation_mode": "editorial", "interval_minutes": 1440,
+      "tags": ["AI工具", "工具目录"], "site_fulltext": false, "syndicate_fulltext": false
+    },
+    {
+      "id": "catalog-aihot-tip", "name": "AIHOT · AI 精选教程（内部参考）", "kind": "external", "config": {},
+      "tier": "T2", "participation_mode": "isolated", "interval_minutes": 1440,
+      "tags": ["教程/实践", "待再分发授权"], "site_fulltext": false, "syndicate_fulltext": false
+    },
+    {
+      "id": "catalog-360-teacher", "name": "360 AI · 教师的 AI 辅助", "kind": "external", "config": {},
+      "tier": "T2", "participation_mode": "editorial", "interval_minutes": 1440,
+      "tags": ["AI工具", "教师辅助"], "site_fulltext": false, "syndicate_fulltext": false
+    },
+    {
+      "id": "catalog-360-student", "name": "360 AI · 学生的求职助手", "kind": "external", "config": {},
+      "tier": "T2", "participation_mode": "editorial", "interval_minutes": 1440,
+      "tags": ["AI工具", "招生就业"], "site_fulltext": false, "syndicate_fulltext": false
+    },
+    {
+      "id": "catalog-360-topics", "name": "360 AI · 专题推荐", "kind": "external", "config": {},
+      "tier": "T2", "participation_mode": "editorial", "interval_minutes": 1440,
+      "tags": ["AI工具", "资源导航"], "site_fulltext": false, "syndicate_fulltext": false
+    },
+    {
+      "id": "catalog-uisdc", "name": "优设 · AI 情报", "kind": "external", "config": {},
+      "tier": "T2", "participation_mode": "editorial", "interval_minutes": 360,
+      "tags": ["AI", "情报"], "site_fulltext": false, "syndicate_fulltext": false
+    },
+    {
       "id": "weblist-chinazy-policy",
       "name": "中国职业技术教育网 · 政策法规",
       "kind": "web_list",
@@ -40,6 +70,11 @@
       "kind": "web_list",
       "config": {
         "url": "https://xxhjzw.czit.edu.cn/tzgg.htm",
+        "detail": {
+          "titleSelector": "h1.c-title",
+          "titleAuthoritative": true,
+          "maxFetches": 15
+        },
         "parseMode": "html",
         "itemSelector": "div.lm_list ul li",
         "linkSelector": "a[href]",
@@ -374,6 +409,71 @@
       "tags": [
         "媒体",
         "AI资讯"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "aibase-jiaocheng",
+      "name": "AIbase · MCP 案例教程",
+      "kind": "web_list",
+      "config": {
+        "url": "https://mcp.aibase.com/zh/server/doc",
+        "parseMode": "html",
+        "itemSelector": "a[href^=\"/zh/server/doc/\"]",
+        "linkSelector": "a[href]",
+        "titleSelector": ".font600",
+        "publishedAtSelector": "div:has(> i.icon-shijian1)",
+        "publishedAtUtcOffset": "+08:00",
+        "allowUrlPrefixes": [
+          "https://mcp.aibase.com/zh/server/doc/"
+        ],
+        "_aihot": {
+          "initialBackfillLimit": 8
+        }
+      },
+      "tier": "T2",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 1440,
+      "tags": [
+        "教程",
+        "MCP"
+      ],
+      "site_fulltext": false,
+      "syndicate_fulltext": false
+    },
+    {
+      "id": "weblist-aixzd-tools",
+      "name": "AI 星踪岛 · AI 工具推荐",
+      "kind": "web_list",
+      "config": {
+        "url": "https://aixzd.com/tools",
+        "parseMode": "html",
+        "itemSelector": ".tax-list .tax-post-item",
+        "linkSelector": "a.item-wrap",
+        "titleSelector": ".p-title .title-text",
+        "publishedAtUtcOffset": "+08:00",
+        "allowUrlPrefixes": [
+          "https://aixzd.com/"
+        ],
+        "detail": {
+          "maxFetches": 8,
+          "publishedAtSelector": ".meta-item:has(.meta-title:contains(\"收录时间\")) .meta-text",
+          "publishedAtAuthoritative": true,
+          "summarySelector": "meta[name=\"description\"]"
+        },
+        "_aihot": {
+          "initialBackfillLimit": 8
+        }
+      },
+      "tier": "T2",
+      "owner_entity_id": null,
+      "participation_mode": "editorial",
+      "interval_minutes": 1440,
+      "tags": [
+        "工具推荐",
+        "AI"
       ],
       "site_fulltext": false,
       "syndicate_fulltext": false

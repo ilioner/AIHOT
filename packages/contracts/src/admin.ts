@@ -3,6 +3,7 @@
 // never a public contract. Rows mirror their SQL columns (snake_case); timestamps are ISO strings.
 
 import type { CategoryDefinition } from "./taxonomy.ts";
+import type { SourceMetadata } from "./source-metadata.ts";
 
 declare const iso: unique symbol;
 
@@ -134,7 +135,7 @@ export interface AdminSourceDetail {
     id: number; started_at: Timestamp; finished_at: Timestamp | null; status: string; found_count: number | null; new_count: number | null; error: string | null;
     detail: { pages?: number; backlog?: number; dropped?: number; presentationFailures?: Array<{ url: string; error: string }> } | null;
   }>;
-  items: Array<{ id: string; title: string; url: string; discovered_at: Timestamp; published_at: Timestamp | null; processing_state: string; selected: boolean | null; visibility: string | null; title_zh: string | null }>;
+  items: Array<{ id: string; title: string; url: string; discovered_at: Timestamp; published_at: Timestamp | null; processing_state: string; selected: boolean | null; visibility: string | null; title_zh: string | null; status_reason?: string }>;
   stats: { total: number; last7d: number; selected: number };
   history: AdminAuditEntry[];
   /** Progress of the re-derivation queued after the last change of licences, tier or participation. */
@@ -156,6 +157,7 @@ export interface AdminSourcePreview {
 // Content and events
 
 export interface AdminContentRow {
+  status_reason?: string;
   id: string;
   title: string;
   url: string;
@@ -212,6 +214,9 @@ export interface AdminPublication {
 export interface AdminContentChain {
   categories: CategoryDefinition[];
   article: {
+    status_reason?: string;
+    source_metadata?: SourceMetadata | null;
+    media?: Array<{ kind: string; url: string; alt?: string | null }>;
     id: string; source_id: string; url: string; identity_key: string; title: string; author: string | null; language: string | null;
     published_at: Timestamp | null; published_at_claim: string | null; discovered_at: Timestamp; timeline_at: Timestamp; backfill: boolean;
     body_status: string; revision: number; processing_state: string; processing_error: string | null; grouped_at: Timestamp | null; body_chars: number | null;

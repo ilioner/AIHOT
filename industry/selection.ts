@@ -5,6 +5,7 @@
 // 用 scripts/eval-selection.ts 在你自己标注的样本上重跑一遍，再决定上线（见 docs/selection.md）。
 
 export const SELECTION = {
+  blockedTags: ["其他"] as readonly string[],
   /**
    * 信源分级 → 入选门槛（平均分）。分级在后台“信源”里给每个源设置：
    *   T1 官方一手（官网、官方博客、机构）· T1_5 官方账号、准官方创作者 · T2 媒体与个人

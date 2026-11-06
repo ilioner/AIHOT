@@ -70,6 +70,7 @@ export function needsShortTweetTranslation(text: string): boolean {
 const unfetchedXArticle = (a: AnalyzeInputArticle) => !!a.xPost && a.bodyStatus !== "ok" && onlyXArticleLink(String(a.xPost.text ?? ""));
 
 function materialQuality(a: AnalyzeInputArticle): string {
+  if (a.sourceMetadata?.documentUrl && !a.bodyText && !a.excerpt) return "PDF 公告，仅按文件名称判断相关性，不推断正文内容";
   if (a.xPost) return "完整正文（来自 RSS / API 自带的 content 字段）";
   if (a.bodyText) return a.source.fetchesBody ? "完整正文（抓自原始网页）" : "完整正文（来自 RSS / API 自带的 content 字段）";
   if (a.excerpt) return "仅摘要（feed 未提供完整正文）";
@@ -314,7 +315,7 @@ export function stripEcho(text: string): string {
 }
 
 /** `title_zh:` / `summary_zh:` / `body_zh:` lines, with fallbacks for answers that drop the labels. */
-export function parseTranslateOutput(text: string): { titleZh: string; summaryZh: string; bodyZh: string } {
+export function parseTranslateOutput(text: string): { titleZh: string; summaryZh: string; bodyZh: string; notesZh?: string } {
   let titleZh = "";
   let summaryZh = "";
   let bodyZh = "";
@@ -342,7 +343,7 @@ export function parseTranslateOutput(text: string): { titleZh: string; summaryZh
     for (let i = summaryLine + 1; i < lines.length; i += 1) {
       const t = lines[i]!.trim();
       if (!t) continue;
-      if (/^(title_zh|summary_zh|body_zh)\s*[:：]/.test(t)) break;
+      if (/^(title_zh|summary_zh|body_zh|notes_zh)\s*[:：]/.test(t)) break;
       more.push(t);
     }
     const parts = [summaryZh, ...more].filter(Boolean);
@@ -352,7 +353,7 @@ export function parseTranslateOutput(text: string): { titleZh: string; summaryZh
   if (bodyLine >= 0) {
     const more: string[] = [];
     for (let i = bodyLine + 1; i < lines.length; i += 1) {
-      if (/^(title_zh|summary_zh|body_zh)\s*[:：]/.test(lines[i]!.trim())) break;
+      if (/^(title_zh|summary_zh|body_zh|notes_zh)\s*[:：]/.test(lines[i]!.trim())) break;
       more.push(lines[i]!);
     }
     while (more.length && more[more.length - 1]!.trim() === "") more.pop();
@@ -368,5 +369,17 @@ export function parseTranslateOutput(text: string): { titleZh: string; summaryZh
       titleZh = rest[0]!.trim();
     }
   }
-  return { titleZh, summaryZh: stripEcho(summaryZh), bodyZh: stripEcho(bodyZh) };
+  const result = { titleZh, summaryZh: stripEcho(summaryZh), bodyZh: stripEcho(bodyZh) } as { titleZh: string; summaryZh: string; bodyZh: string; notesZh?: string };
+  const noteLine = lines.findIndex((line) => /^notes_zh\s*[:：]/.test(line.trim()));
+  if (noteLine >= 0) {
+    const first = lines[noteLine]!.replace(/^\s*notes_zh\s*[:：]\s*/, "").trim();
+    const rest: string[] = [];
+    for (let i = noteLine + 1; i < lines.length; i += 1) {
+      const line = lines[i]!;
+      if (/^\s*(title_zh|summary_zh|body_zh|notes_zh)\s*[:：]/.test(line)) break;
+      rest.push(line);
+    }
+    result.notesZh = stripEcho([first, ...rest].join("\n").trim());
+  }
+  return result;
 }

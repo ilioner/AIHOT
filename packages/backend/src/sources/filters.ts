@@ -9,7 +9,11 @@ import { allowed } from "./web-list.ts";
  * after article-page enrichment, because a listing need not carry the article's publication date.
  */
 export function admitListing<C extends Candidate>(candidates: C[], source: SourceRow): C[] {
-  return candidates.filter((c) => allowed(c.url, source)).map((c) => rewriteUrl(c, source)).filter((c) => !noiseFiltered(c, source));
+  return candidates.filter((c) => {
+    if (allowed(c.url, source)) return true;
+    if (source.kind !== "rss") return false;
+    try { return !/^https?:$/i.test(new URL(c.url).protocol); } catch { return true; }
+  }).map((c) => rewriteUrl(c, source)).filter((c) => !noiseFiltered(c, source));
 }
 
 export function noiseFiltered(c: Candidate, source: SourceRow): boolean {

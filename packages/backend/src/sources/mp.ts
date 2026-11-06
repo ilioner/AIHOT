@@ -80,6 +80,8 @@ export async function checkMpAccount(sourceId: string, reason: "schedule" | "man
         sourceId,
         url: p.url,
         title: p.title,
+        sourceMetadata: { title: p.title, itemUrl: p.url, coverUrl: p.cover_url ?? null, categories: [], tags: [] },
+        ...(p.cover_url ? { media: [{ kind: "image" as const, url: p.cover_url }] } : {}),
         author: body?.author ?? null,
         language: "zh",
         publishedAt,

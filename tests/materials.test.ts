@@ -8,7 +8,7 @@ import { tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { closeDb, sql } from "@aihot/backend/db";
-import { upsertMaterial } from "@aihot/backend/content/materials";
+import { upsertMaterial, decideTimeline } from "@aihot/backend/content/materials";
 import { readPublicationDate } from "@aihot/backend/sources/dates";
 import { loadAnalyzeInput, buildMaterial } from "@aihot/backend/editorial/input";
 import { identityKeyForUrl } from "@aihot/backend/lib/url";
@@ -20,6 +20,38 @@ before(async () => {
             (${OTHER}, 'Test aggregator', 'rss', '2100-01-01')`;
 });
 after(() => closeDb());
+
+test("source metadata refresh preserves analysis and time while keeping publisher provenance", async () => {
+  const material = { sourceId: SOURCE, url: `https://example.com/metadata-${tag()}`, title: "原始标题", bodyText: "原始正文", via: "fetch" as const };
+  const { articleId } = await upsertMaterial(material);
+  await sql`UPDATE articles SET processing_state='analyzed' WHERE id=${articleId}`;
+  const [before] = await sql`SELECT revision,discovered_at,timeline_at,processing_state FROM articles WHERE id=${articleId}`;
+  const metadata = { title: material.title, originalTitle: "Original", categories: ["教育工具"], tags: ["教案"], itemUrl: material.url,
+    originalUrl: "https://original.example/article", coverUrl: "https://image.example/cover.png" };
+  const result = await upsertMaterial({ ...material, sourceMetadata: metadata, media: [{ kind: "image", url: metadata.coverUrl }] });
+  assert.equal(result.revised, false);
+  assert.equal(result.processingNeeded, undefined);
+  const [after] = await sql`SELECT revision,discovered_at,timeline_at,processing_state FROM articles WHERE id=${articleId}`;
+  assert.deepEqual(after, before);
+  const input = (await loadAnalyzeInput(articleId))!;
+  assert.equal(input.sourceMetadata!.originalTitle, "Original");
+  assert.deepEqual(input.sourceMetadata!.categories, ["教育工具"]);
+  assert.equal(input.media[0]!.url, metadata.coverUrl);
+  assert.match(buildMaterial(input), /源站分类（仅供参考，不是本站分类）：教育工具/);
+  await upsertMaterial({ ...material, sourceId: OTHER, sourceMetadata: { ...metadata, categories: ["不覆盖"] } });
+  assert.deepEqual((await loadAnalyzeInput(articleId))!.sourceMetadata!.categories, ["教育工具"]);
+});
+
+test("discovery policy is opt-in and never turns future source dates or explicit history into news", () => {
+  const now = new Date("2026-11-05T04:00:00Z");
+  assert.equal(decideTimeline(null, now).backfill, true);
+  const discovered = decideTimeline(null, now, null, undefined, "discovery");
+  assert.equal(discovered.backfill, false);
+  assert.equal(discovered.publishedAt, null);
+  assert.equal(discovered.timelineAt, now);
+  assert.equal(decideTimeline(new Date("2027-01-01"), now, null, undefined, "discovery").backfill, true);
+  assert.equal(decideTimeline(null, now, "first-import", undefined, "discovery").backfill, true);
+});
 
 const state = async (id: string) =>
   (await sql<{ revision: number; title: string; content_hash: string | null; processing_state: string }[]>`
@@ -34,6 +66,8 @@ test("invalid source timestamps remain unknown on inserts and revisions", async 
   assert.equal((await upsertMaterial({ ...material, title: "Undated, revised" })).revised, true);
   const [row] = await sql`SELECT published_at,published_at_claim,source_updated_at FROM articles WHERE id=${articleId}`;
   assert.deepEqual({ ...row }, { published_at: null, published_at_claim: null, source_updated_at: null });
+  const invalidDiscovery = await upsertMaterial({ ...material, url: `${material.url}-discovery`, undatedPolicy: "discovery" });
+  assert.equal(invalidDiscovery.backfill, true);
 });
 
 /** An article as a history import writes it: imported content, no hash, no history row, analysed. */

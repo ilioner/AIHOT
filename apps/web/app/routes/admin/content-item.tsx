@@ -6,7 +6,7 @@ import type { AdminContentChain, AdminPresentationRefresh } from "@aihot/contrac
 import { adminGet } from "../../lib/admin.server";
 import { useAdminAction } from "../../features/admin/action";
 import { bj, money } from "../../features/admin/format";
-import { KIND_LABEL, MODE_LABEL, VISIBILITY_LABEL } from "../../features/admin/labels";
+import { KIND_LABEL, MODE_LABEL, VISIBILITY_LABEL, PROCESSING_LABEL } from "../../features/admin/labels";
 import { AdminPage, Badge, Button, Card, Empty, Field, Input, Json, KV, ReasonDialog, Select, Textarea } from "../../features/admin/ui";
 
 
@@ -94,14 +94,25 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
       }
     >
       <div className="mb-5 flex flex-wrap gap-1.5">
-        {p ? <Badge tone={p.visibility === "public" ? "ok" : "warn"}>{VISIBILITY_LABEL[p.visibility] ?? p.visibility}</Badge> : <Badge>未公开</Badge>}
+        <Badge tone={p?.visibility === "public" ? "ok" : "warn"}>{a.status_reason ?? (p ? VISIBILITY_LABEL[p.visibility] ?? p.visibility : "未公开")}</Badge>
         {p?.selected && <Badge tone="accent">精选</Badge>}
         {p?.eligible === false && <Badge>不进公开面</Badge>}
         {a.backfill && <Badge tone="warn">历史回灌</Badge>}
-        <Badge>处理 {a.processing_state}</Badge>
+        <Badge>{PROCESSING_LABEL[a.processing_state] ?? a.processing_state}</Badge>
         {c.override && <Badge tone="info" title={c.override.reason ?? undefined}>有人工设置 v{c.override.version}</Badge>}
       </div>
       {a.processing_error && <div className="mb-5 rounded-card bg-hot-soft px-4 py-3 text-[13px] text-hot ring-1 ring-hot/20">{a.processing_error}</div>}
+      <Card title="源站原始信息" className="mb-5">
+        <KV items={[
+          ["采集标题", a.source_metadata?.title ?? a.title],
+          ["原文标题", a.source_metadata?.originalTitle],
+          ["源站分类", a.source_metadata?.categories.join("、") || "源站未提供"],
+          ["源站标签", a.source_metadata?.tags.join("、") || "源站未提供"],
+          ...([ ["条目链接", a.source_metadata?.itemUrl ?? a.url], ["原文链接", a.source_metadata?.originalUrl], ["列表链接", a.source_metadata?.catalogUrl] ] as const)
+            .map(([label, url]) => [label, url ? <a href={url} target="_blank" rel="noreferrer" className="break-all text-accent">{url}</a> : "源站未提供"] as [string, ReactNode]),
+        ]} />
+        {a.source_metadata?.coverUrl ? <a href={a.source_metadata.coverUrl} target="_blank" rel="noreferrer"><img src={a.source_metadata.coverUrl} alt={a.source_metadata.title} loading="lazy" referrerPolicy="no-referrer" className="mt-3 max-h-48 max-w-full rounded-card" /></a> : <p className="mt-3 text-[12px] text-ink-4">源站未提供封面</p>}
+      </Card>
 
       <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
         <Card title="处理链路">
@@ -169,14 +180,14 @@ export default function ContentItem({ loaderData }: Route.ComponentProps) {
                   ))}
                 </div>
               ) : (
-                <span className="text-ink-4">{a.participation_mode === "editorial" ? "还没有判断（等待队列或失败）" : "氛围信源不做编辑判断"}</span>
+                <span className="text-ink-4">{a.participation_mode === "hot_signal" ? "氛围信源不做编辑判断" : "还没有判断（等待队列或失败）；公开权限不代表分析结果"}</span>
               )}
             </Step>
             <Step title="公开" tone={p ? (p.visibility === "withdrawn" ? "bad" : "accent") : "muted"} meta={p ? `更新于 ${bj(p.updated_at, true)}` : undefined}>
               {p ? (
                 <KV
                   items={[
-                    ["范围", VISIBILITY_LABEL[p.visibility] ?? p.visibility],
+                    ["范围", a.status_reason ?? VISIBILITY_LABEL[p.visibility] ?? p.visibility],
                     ["精选", p.selected ? `是 · 可见于 ${p.visible_after ? bj(p.visible_after, true) : "立即"}` : "否"],
                     ["栏目", p.category ? categoryLabel(p.category) : null],
                     ["标签", (p.tags as string[] | null)?.join("、")],

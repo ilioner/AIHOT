@@ -9,6 +9,7 @@ import { groupingReset, reconcileMaterialSource } from "./provenance.ts";
 import { emit } from "../modules.ts";
 import { rebaseTranslation } from "./presentation.ts";
 import { audit } from "../audit.ts";
+import { sourceMetadata, type SourceMetadata } from "@aihot/contracts/source-metadata";
 
 export interface MediaItem {
   kind: "image" | "video";
@@ -49,9 +50,11 @@ export interface MaterialInput {
   media?: MediaItem[];
   xPost?: XPostData | null;
   raw?: unknown;
+  sourceMetadata?: SourceMetadata;
   /** How it arrived: the engine's collection, the ingest API or an import, or the module that brought it (its name). */
   via: "fetch" | "ingest" | "import" | (string & {});
   discoveredAt?: Date;
+  undatedPolicy?: "discovery";
   /** Explicit backfill: first import of a new source, or a report flagged as backfill. */
   backfill?: string | null;
   /** Keep an existing id when importing history. */
@@ -86,12 +89,12 @@ const UNKNOWN_TIME = "unknown-publication-time";
 const STALE = "stale-on-discovery";
 
 /** The one timeline rule shared by every entrance. */
-export function decideTimeline(claimed: Date | null | undefined, discoveredAt: Date, explicitBackfill?: string | null, aheadMs = FUTURE_TOLERANCE_MS): TimelineDecision {
+export function decideTimeline(claimed: Date | null | undefined, discoveredAt: Date, explicitBackfill?: string | null, aheadMs = FUTURE_TOLERANCE_MS, undatedPolicy?: "discovery"): TimelineDecision {
   let publishedAt: Date | null = claimed && Number.isFinite(claimed.getTime()) ? claimed : null;
   if (publishedAt && publishedAt.getTime() > discoveredAt.getTime() + aheadMs) publishedAt = null;
   let backfillReason: string | null = null;
   if (explicitBackfill) backfillReason = explicitBackfill;
-  else if (!publishedAt) backfillReason = UNKNOWN_TIME;
+  else if (!publishedAt && !(claimed == null && undatedPolicy === "discovery")) backfillReason = UNKNOWN_TIME;
   else if (publishedAt && discoveredAt.getTime() - publishedAt.getTime() > STALE_ON_DISCOVERY_MS) backfillReason = STALE;
   const backfill = backfillReason !== null;
   const timelineAt = backfill && publishedAt ? publishedAt : discoveredAt;
@@ -229,15 +232,18 @@ async function lockMaterial(db: Db, identityKey: string) {
 }
 
 async function upsertIn(db: Db, m: MaterialInput): Promise<MaterialResult> {
+  const undatedPolicy = m.publishedAt == null ? m.undatedPolicy : undefined;
   m = { ...m,
     publishedAt: m.publishedAt && Number.isFinite(m.publishedAt.getTime()) ? m.publishedAt : null,
     sourceUpdatedAt: m.sourceUpdatedAt && Number.isFinite(m.sourceUpdatedAt.getTime()) ? m.sourceUpdatedAt : null,
   };
+  const metadata = sourceMetadata(m.sourceMetadata);
+  if (metadata) m.raw = { ...(m.raw && typeof m.raw === "object" ? m.raw : {}), sourceMetadata: metadata };
   const identityKey = identityKeyFor(m);
   const discoveredAt = m.discoveredAt ?? new Date();
   const title = collapseWhitespace(m.title).slice(0, 1000) || m.url;
 
-  const t = decideTimeline(m.publishedAt, discoveredAt, m.backfill);
+  const t = decideTimeline(m.publishedAt, discoveredAt, m.backfill, FUTURE_TOLERANCE_MS, undatedPolicy);
   // Most listing entries are already stored. Lock and reuse those rows without attempting an
   // insert of their body and raw payload on every collection. The unique key still arbitrates
   // concurrent first discoveries; after losing that insert, read and lock its winner.
@@ -284,6 +290,10 @@ async function upsertIn(db: Db, m: MaterialInput): Promise<MaterialResult> {
   // between the two sources' versions on every fetch. Only the article's own source revises it.
   if (existing!.source_id !== m.sourceId) {
     return unchanged;
+  }
+  if (metadata) {
+    await db`UPDATE articles SET raw = coalesce(raw, '{}'::jsonb) || jsonb_build_object('sourceMetadata', ${db.json({ ...metadata })})
+      WHERE id = ${existing!.id} AND raw->'sourceMetadata' IS DISTINCT FROM ${db.json({ ...metadata })}::jsonb`;
   }
   // Recover source precision only when the new reading describes the stored instant. No guessed
   // midnight heuristic and no paid reanalysis for an unchanged article.

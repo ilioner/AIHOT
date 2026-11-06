@@ -10,6 +10,7 @@ const html = `<html><head><meta name="date" content="2026-09-11T19:58:33Z"></hea
   `<article><a href="/post">A real article</a><span title="Unix: 1789171113866">Sep 11, 2026</span></article></body></html>`;
 const server = http.createServer((req, res) => {
   res.setHeader("content-type", "text/html");
+  if (req.url === "/notice") return res.end('<html><body><h1>职业教育政策通知</h1><div><iframe src="/viewer.html?file=%2Fpolicy.pdf"></iframe><a href="/policy.pdf">下载此 PDF 文件</a></div></body></html>');
   if (req.url === "/modified") return res.end(`<meta property="article:modified_time" content="2026-10-14T00:00:00Z"><time itemprop="dateModified" datetime="2026-10-14T00:00:00Z">Updated today</time>`);
   if (req.url === "/unlabelled") return res.end(`<time datetime="2026-10-14T00:00:00Z">2026-10-14</time>`);
   if (req.url === "/published") return res.end(`<time itemprop="datePublished" datetime="2020-02-15T00:00:00Z">Published February 15, 2020</time>`);
@@ -22,6 +23,16 @@ config.allowPrivateNetworkFetch = true;
 after(async () => {
   config.allowPrivateNetworkFetch = previousPrivateFetch;
   await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+
+test("truncated listing names use their full title attribute and PDF notices keep only document metadata", async () => {
+  const source = { config: { url: base, detail: { titleSelector: "h1" } } } as any;
+  const [item] = fromHtml('<a href="/notice" title="职业教育政策通知">职业教育...</a>', base, source);
+  assert.equal(item!.title, "职业教育政策通知");
+  const detail = await fetchDetail(`${base}/notice`, source, { date: false, title: true, summary: false, body: true });
+  assert.equal(detail.title, "职业教育政策通知");
+  assert.equal(detail.documentUrl, `${base}/policy.pdf`);
+  assert.equal(detail.body, null);
 });
 
 test("a listing uses the visible date when its tooltip is not a publication date", () => {

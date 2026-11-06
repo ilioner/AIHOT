@@ -3,5 +3,6 @@
 // pages' parts. Each list keeps the order its entries appear in on the site.
 import type { ModuleDeclaration } from "@aihot/contracts/modules";
 import wereadMp from "@aihot/weread-mp";
+import sourceCatalogs from "@aihot/source-catalogs";
 
-export const MODULES: readonly ModuleDeclaration[] = [wereadMp];
+export const MODULES: readonly ModuleDeclaration[] = [wereadMp, sourceCatalogs];

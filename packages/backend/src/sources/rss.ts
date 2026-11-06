@@ -200,6 +200,7 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
         ...(enclosure ? [{ kind: "image" as const, url: enclosure["@url"]! }] : []),
         ...(bodyHtmlRaw ? imagesFrom(bodyHtmlRaw, link) : []),
       ];
+      const categories = arr(it.category).map((c) => text(c)).filter(Boolean);
       out.push({
         url: link,
         ...(mediaFile ? { identityKey: identityKeyFor({ sourceId: source.id, url: guid, title, via: "fetch" }) } : {}),
@@ -209,7 +210,8 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
         ...feedText(bodyHtml, description ? stripTags(description) : null, source, !mediaFile && !video),
         ...(videoExcerpt ? { excerpt: videoExcerpt } : {}),
         media: media.slice(0, 6),
-        categories: arr(it.category).map((c) => text(c)).filter(Boolean),
+        categories,
+        sourceMetadata: { title, itemUrl: link, originalUrl: link, categories, tags: [], coverUrl: media[0]?.url ?? null },
         raw: { guid: guid || null },
       });
     }
@@ -232,6 +234,7 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
       const plainBody = atomPlainText(body);
       const bodyHtmlRaw = plainBody === null ? text(body) : escapeXml(plainBody);
       const bodyHtml = bodyHtmlRaw ? sanitizeBody(bodyHtmlRaw, entryUrl) : null;
+      const categories = arr(e.category).map((c: any) => c?.["@term"] ?? text(c)).filter(Boolean);
       out.push({
         url: entryUrl,
         title,
@@ -242,7 +245,8 @@ export async function fetchRss(source: SourceRow, opts: { force?: boolean } = {}
         ...feedText(bodyHtml, summary, source, !video, plainBody),
         ...(videoExcerpt ? { excerpt: videoExcerpt } : {}),
         media: bodyHtmlRaw ? imagesFrom(bodyHtmlRaw, entryUrl) : [],
-        categories: arr(e.category).map((c: any) => c?.["@term"] ?? text(c)).filter(Boolean),
+        categories,
+        sourceMetadata: { title, itemUrl: entryUrl, originalUrl: entryUrl, categories, tags: [], coverUrl: bodyHtmlRaw ? imagesFrom(bodyHtmlRaw, entryUrl)[0]?.url ?? null : null },
         raw: { id: text(e.id) || null },
       });
     }
