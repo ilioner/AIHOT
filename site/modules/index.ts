@@ -4,5 +4,6 @@
 import type { ModuleDeclaration } from "@aihot/contracts/modules";
 import wereadMp from "@aihot/weread-mp";
 import sourceCatalogs from "@aihot/source-catalogs";
+import skillhubPush from "@aihot/skillhub-push";
 
-export const MODULES: readonly ModuleDeclaration[] = [wereadMp, sourceCatalogs];
+export const MODULES: readonly ModuleDeclaration[] = [wereadMp, sourceCatalogs, skillhubPush];

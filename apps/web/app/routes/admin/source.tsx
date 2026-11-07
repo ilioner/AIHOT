@@ -111,7 +111,7 @@ export default function SourceDetail({ loaderData }: Route.ComponentProps) {
               if (r) setPreview(r);
             }}
           >
-            预览当前配置
+            {s.kind === "ai_list" ? "预览（一次模型调用）" : "预览当前配置"}
           </Button>
           <Button busy={pending === "fetch"} onClick={() => run("POST", `${base}/fetch`, undefined, { label: "fetch", success: "已加入采集队列" })}>
             立即采集
@@ -138,9 +138,19 @@ export default function SourceDetail({ loaderData }: Route.ComponentProps) {
         <Stat label="入选精选" value={num(stats.selected)} />
       </div>
       {s.last_error && s.health !== "ok" && <div className="mb-5 rounded-card bg-hot-soft px-4 py-3 text-[13px] text-hot ring-1 ring-hot/20">{s.last_error}</div>}
+      {s.kind === "ai_list" && (
+        <div className="mb-5 rounded-card bg-amber/10 px-4 py-3 text-[12.5px] text-ink-2 ring-1 ring-amber/25">
+          AI 抽取列表：每次采集和每次预览都会调用一次站点预设的结构化模型，计入预算。模型只从页面现有链接里挑条目，不抓目标站正文。
+        </div>
+      )}
 
       {preview && (
         <Card className="mb-5" title={`预览：${preview.count} 条（${preview.ms}ms，未入库）`} right={<button onClick={() => setPreview(null)}>收起</button>}>
+          {preview.paidModelCall && (
+            <div className="mb-3 rounded-card bg-amber/10 px-3 py-2 text-[12.5px] text-ink-2 ring-1 ring-amber/25">
+              本次预览已产生一次模型调用，计入预算。
+            </div>
+          )}
           {preview.items.length ? (
             <ul className="space-y-2.5">
               {preview.items.map((i) => (

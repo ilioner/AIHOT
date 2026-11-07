@@ -72,6 +72,8 @@ const unfetchedXArticle = (a: AnalyzeInputArticle) => !!a.xPost && a.bodyStatus 
 function materialQuality(a: AnalyzeInputArticle): string {
   if (a.sourceMetadata?.documentUrl && !a.bodyText && !a.excerpt) return "PDF 公告，仅按文件名称判断相关性，不推断正文内容";
   if (a.xPost) return "完整正文（来自 RSS / API 自带的 content 字段）";
+  // An ai_list entry is the directory line itself: the model read the listing page, not the target.
+  if (a.source.kind === "ai_list") return a.excerpt ? "仅列表条目（从列表页抽出的名称与简介，未抓取原始网页）" : "仅标题（列表页无简介，未抓取原始网页）";
   if (a.bodyText) return a.source.fetchesBody ? "完整正文（抓自原始网页）" : "完整正文（来自 RSS / API 自带的 content 字段）";
   if (a.excerpt) return "仅摘要（feed 未提供完整正文）";
   if (a.bodyStatus === "unconfirmed") return "抓取失败，仅标题可用";

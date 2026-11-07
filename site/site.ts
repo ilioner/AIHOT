@@ -132,15 +132,6 @@ export const ITEM_COPY = {
   showScore: true,
 };
 
-/** 关于页的一张二维码卡片。 */
-interface ContactCard {
-  kind: string;
-  title: string;
-  note: string;
-  /** 站外链接过的根目录文件名（选填），比如 qr-wechat.jpg：这个地址总是跳到现在的二维码。 */
-  alias?: string;
-}
-
 /** 关于页的文案。数字（信源数、收录数、精选数、日报期数）来自站内实时统计，不用写在这里。 */
 export const ABOUT = {
   kicker: `关于 ${SITE.name}`,
@@ -161,14 +152,11 @@ export const ABOUT = {
   /**
    * 作者块（选填），null 就不显示。
    * avatarSourceId：一个 X 账号信源的 id，头像取它的（选填）。
-   * 二维码在后台“设置”里上传，或者放进 site/brand/contact/；没有二维码就不显示那张卡片。
    */
   maker: null as null | {
     name: string;
     avatarSourceId?: string | null;
     greeting: string[];
-    wechat?: ContactCard;
-    feishu?: ContactCard;
   },
   /** 页面底部的版权与下架说明，中间接“反馈页”的链接。 */
   copyright: [`${SITE.name} 是聚合摘要和阅读索引，原文版权归各来源所有。如果你是来源方，希望更正、下架或调整展示方式，可以通过`, "联系我们。"] as [string, string],
@@ -178,10 +166,6 @@ export const ABOUT = {
 
 /** 后台页面上给管理员的提示（选填）。 */
 export const ADMIN = {
-  /** “反馈”页标题下的一行。 */
-  feedbackNote: null as string | null,
-  /** 确认框里补的一句本站规定：封禁反馈来源时。 */
-  banNote: null as string | null,
   /** 确认框里补的一句本站规定：调整付费服务的请求上限时。 */
   budgetNote: null as string | null,
 };

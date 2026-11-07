@@ -32,6 +32,11 @@
       "tags": ["AI", "情报"], "site_fulltext": false, "syndicate_fulltext": false
     },
     {
+      "id": "catalog-uisdc-nav", "name": "优设 · AI 导航", "kind": "external", "config": {},
+      "tier": "T2", "participation_mode": "editorial", "interval_minutes": 1440,
+      "tags": ["AI工具", "资源导航"], "site_fulltext": false, "syndicate_fulltext": false
+    },
+    {
       "id": "weblist-chinazy-policy",
       "name": "中国职业技术教育网 · 政策法规",
       "kind": "web_list",

@@ -3,7 +3,7 @@ import { after, before, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
 import { stopBoss } from "@aihot/backend/jobs/queue";
 import { parseCatalog, SOURCE_IDS } from "../backend/adapters.ts";
-import { collectCatalog, collectQueue, scheduleCollect } from "../backend/collect.ts";
+import { collectCatalog, collectQueue, readCatalog, scheduleCollect } from "../backend/collect.ts";
 import { installModules } from "@aihot/backend/modules";
 import { fetchNow } from "@aihot/backend/admin/sources";
 import module from "../server.ts";
@@ -55,6 +55,72 @@ test("product cards are mapped without inventing publication dates", () => {
   assert.deepEqual(result[0]!.sourceMetadata!.categories, ["课件生成"]);
   assert.equal(result[0]!.sourceMetadata!.coverUrl, "https://image.example/tool.png");
   assert.throws(() => parseCatalog("catalog-aibase", "<html>请稍后再试</html>"), /卡片为空/);
+});
+
+test("navigation blocks keep every category, first labels per resource and no invented dates", () => {
+  const nav = `
+    <div class="part-cat-block part-cat-block-ai"><h2 class="c-title" id="hot"><div class="l"><strong>热门推荐</strong></div><div class="r"></div></h2>
+      <div class="c-content"><div class="c-loop c-loop-ai flex">
+        <div class="part-item-website f-item p-item"><a class="f-box" href="https://jimeng.jianying.com/ai-tool/home" target="_blank">
+          <h3 class="item-title"><i class="item-ico"><i class="thumb thumb-img">
+            <img data-src="https://image.example/jimeng.webp" src="data:image/gif;base64,R0lGOD" alt="即梦">
+          </i></i><strong class="title">  即梦  </strong></h3>
+          <div class="item-desc">推荐！人人都能用的全能AI创意神器</div>
+          <div class="item-tag"><span class="tag tag-1"> 推荐 </span><span class="tag tag-2">CN</span></div></a>
+        </div>
+        <div class="part-item-website f-item p-item"><a class="f-box" href="https://www.example.com/tool?utm_source=nav&amp;spm=home">
+          <h3 class="item-title"><strong class="title">AI &amp; 设计  助手</strong></h3>
+          <div class="item-desc">  批量
+            处理图片  </div></a>
+        </div>
+      </div></div>
+    </div>
+    <div class="part-cat-block part-cat-block-ai"><h2 class="c-title" id="smart"><div class="l"><strong>AI绘画</strong></div><div class="r"></div></h2>
+      <div class="c-content"><div class="c-loop c-loop-ai flex">
+        <div class="part-item-website f-item p-item"><a class="f-box" href="https://example.com/tool/">
+          <strong class="title">同一资源的另一个分类</strong><div class="item-desc">只保留第一次出现的分类</div>
+          <div class="item-tag"><span class="tag tag-3">绘画</span></div></a>
+        </div>
+      </div></div>
+    </div>`;
+  const result = parseCatalog("catalog-uisdc-nav", nav);
+  assert.equal(result.length, 2);
+  assert.deepEqual(result.map(item => item.sourceMetadata!.categories), [["热门推荐"], ["热门推荐"]]);
+  assert.deepEqual(result[0]!.sourceMetadata!.tags, ["推荐", "CN"]);
+  assert.deepEqual(result[1]!.sourceMetadata!.tags, []);
+  assert.equal(result[1]!.title, "AI & 设计 助手");
+  assert.equal(result[1]!.excerpt, "批量 处理图片");
+  assert.equal(result[1]!.url, "https://www.example.com/tool?utm_source=nav&spm=home");
+  assert.equal(result[1]!.identityKey, "url:https://example.com/tool");
+  assert.notEqual(result[0]!.identityKey, result[1]!.identityKey);
+  assert.equal(result[0]!.sourceMetadata!.iconUrl, "https://image.example/jimeng.webp");
+  assert.equal(result[0]!.sourceMetadata!.coverUrl, "https://image.example/jimeng.webp");
+  assert.equal(result[0]!.sourceMetadata!.catalogUrl, "https://hao.uisdc.com/ai/");
+  assert.equal(result[0]!.media!.length, 1);
+  assert.equal(result[0]!.publishedAt, null);
+  assert.equal(result[0]!.undatedPolicy, "discovery");
+  assert.equal((result[0]!.raw as any).contentKind, "tool-directory");
+  assert.equal((result[0]!.raw as any).blockId, "hot");
+  assert.equal((result[0]!.raw as any).blockName, "热门推荐");
+  assert.equal((result[0]!.raw as any).groupId, 0);
+  assert.match((result[0]!.raw as any).externalId, /^[0-9a-f]{64}$/);
+  assert.notEqual((result[0]!.raw as any).externalId, (result[1]!.raw as any).externalId);
+  assert.equal((result[0]!.raw as any).publicationTimeKnown, false);
+  assert.throws(() => parseCatalog("catalog-uisdc-nav", "<html><body>改版</body></html>"), /为空或页面结构变化/);
+});
+
+test("navigation reader identifies itself as a browser instead of a bare client", async () => {
+  const html = `<div class="part-cat-block"><h2 class="c-title" id="hot"><div class="l"><strong>热门推荐</strong></div></h2>
+    <div class="part-item-website"><a class="f-box" href="https://example.com/tool"><strong class="title">工具</strong><div class="item-desc">简介</div></a></div></div>`;
+  let request: { url: string; options: { headers?: Record<string, string> } } | null = null;
+  const items = await readCatalog("catalog-uisdc-nav", async (url, options) => {
+    request = { url, options };
+    return { status: 200, url, headers: new Headers(), body: Buffer.from(html), truncated: false, text: () => html };
+  });
+  assert.equal(items.length, 1);
+  assert.equal(request!.url, "https://hao.uisdc.com/ai/");
+  assert.match(request!.options.headers!["user-agent"]!, /^Mozilla\/5\.0/);
+  assert.match(request!.options.headers!.accept!, /^text\/html/);
 });
 
 test("tutorial feed retains attribution and only the requested category", () => {

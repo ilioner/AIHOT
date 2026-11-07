@@ -25,6 +25,13 @@ const KEYS: Record<SourceRow["kind"], string[]> = {
     ...PUBLISHER, "_aihot", "ingestNoiseFilter", "itemUrlPrefixRewrite", "allowUrlPrefixes", "denyUrlPrefixes",
     "publishedAtUtcOffset", "acceptLanguage", "query", "lang", "region", "limit",
   ],
+  // An AI-extracted list: one paid model call over the page's links. No detail (nothing on this page
+  // is read further here) and no publishedAfter (an entry's date may only come from extraction later,
+  // so the boundary would drop every entry and silently collect nothing), as with web_search.
+  ai_list: [
+    ...PUBLISHER, "_aihot", "ingestNoiseFilter", "itemUrlPrefixRewrite", "allowUrlPrefixes", "denyUrlPrefixes",
+    "publishedAtUtcOffset", "acceptLanguage", "url", "prompt", "baseUrl", "maxItems", "maxLinks",
+  ],
   // X accounts are mostly read in shards, which apply only these.
   x_search: [...PUBLISHER, "_aihot", "ingestNoiseFilter", "itemUrlPrefixRewrite", "query", "searchType"],
   mp_account: [...PUBLISHER, "wxid", "ghid", "nickname"],

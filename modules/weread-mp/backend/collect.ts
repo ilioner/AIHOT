@@ -1,7 +1,9 @@
 // Collecting one WeChat account through WeRead: its recent posts (the account's "chapters"), each post's
 // canonical short link and publication time, and the article body from WeRead's reader endpoint, which
-// avoids fetching mp.weixin.qq.com itself. Articles enter the framework through upsertMaterial like every
-// other source, so identity, timeline and analysis rules stay the engine's.
+// avoids fetching mp.weixin.qq.com itself. Every WeRead request goes through the account pool's
+// pooledCaller, so a check is paced, rotates between logins and stops while the whole pool cools down.
+// Articles enter the framework through upsertMaterial like every other source, so identity, timeline and
+// analysis rules stay the engine's.
 import * as cheerio from "cheerio";
 import { sql } from "@aihot/backend/db";
 import { upsertMaterial } from "@aihot/backend/content/materials";
@@ -14,7 +16,7 @@ import { enqueueOn } from "@aihot/backend/jobs/queue";
 import { dajialaConfigured } from "@aihot/backend/providers/dajiala";
 import { ENDPOINTS, WEB_UA } from "./endpoints.ts";
 import { call, classify, errcodeOf, WereadError } from "./http.ts";
-import { borrowAccount, callApi, cookieOf, type Session } from "./pool.ts";
+import { callApi, cookieOf, pooledCaller, type PooledCaller } from "./pool.ts";
 import { isWereadBookId, normalizeWechatShortUrl, shortUrlForReview } from "./wechat.ts";
 
 const MAX_NEW_PER_CHECK = 8;
@@ -24,6 +26,8 @@ const FIRST_CHECK_WINDOW_MS = 7 * 86400_000;
 /** A body that failed for a passing reason is fetched again this many times, while the post is recent. */
 const BODY_RETRIES = 3;
 const BODY_RETRY_WINDOW_MS = 3 * 86400_000;
+/** Scheduler stagger: each queued check starts up to this many seconds late, so they spread out. */
+const STAGGER_SECONDS = 120;
 
 export interface CollectJob {
   sourceId: string;
@@ -43,7 +47,8 @@ export const collectQueue = defineQueue<CollectJob>({
 
 export interface CollectResult {
   sourceId: string;
-  status: "ok" | "missing" | "paused" | "unconfigured" | "failed";
+  /** "cooling": the account pool had nothing to give this cycle, so the source was not checked. */
+  status: "ok" | "missing" | "paused" | "unconfigured" | "failed" | "cooling";
   found?: number;
   created?: number;
   error?: string;
@@ -105,8 +110,13 @@ function postOf(item: unknown, accountName: string): Post | null {
   };
 }
 
-async function page(session: Session, path: string): Promise<Record<string, unknown>[]> {
-  const json = await callApi(session, path, { timeoutMs: 20_000 });
+/** A refusal that ends the whole check: another login cannot cure a cooling pool or a dead token. */
+function endsCheck(error: unknown): boolean {
+  return error instanceof WereadError && (error.kind === "auth" || error.kind === "verify" || error.kind === "throttled");
+}
+
+async function page(caller: PooledCaller, path: string): Promise<Record<string, unknown>[]> {
+  const json = await caller((session) => callApi(session, path, { timeoutMs: 20_000 }));
   for (const key of ["data", "chapters", "list", "reviews"]) {
     const value = json[key];
     if (Array.isArray(value)) return value;
@@ -115,9 +125,13 @@ async function page(session: Session, path: string): Promise<Record<string, unkn
 }
 
 /** A post whose listing lacked its link or time: WeRead's review object carries both. */
-async function resolveMissing(session: Session, post: Post): Promise<Post> {
+async function resolveMissing(caller: PooledCaller, post: Post): Promise<Post> {
   if ((post.url && post.publishedAt) || !post.reviewId) return post;
-  const json = await callApi(session, `/review/single?reviewId=${encodeURIComponent(post.reviewId)}`, { timeoutMs: 10_000 }).catch(() => null);
+  const json = await caller((session) => callApi(session, `/review/single?reviewId=${encodeURIComponent(post.reviewId)}`, { timeoutMs: 10_000 }))
+    .catch((error) => {
+      if (endsCheck(error)) throw error;
+      return null;
+    });
   if (!json) return post;
   const info = (json.review && typeof json.review === "object" ? json.review : json) as Record<string, unknown>;
   return {
@@ -131,7 +145,7 @@ async function resolveMissing(session: Session, post: Post): Promise<Post> {
 }
 
 /** The account's latest posts, with the two fallbacks the app itself uses. */
-async function listPosts(session: Session, bookId: string, accountName: string): Promise<Post[]> {
+async function listPosts(caller: PooledCaller, bookId: string, accountName: string): Promise<Post[]> {
   const posts: Post[] = [];
   const seen = new Set<string>();
   const add = (items: Record<string, unknown>[]) => {
@@ -145,26 +159,31 @@ async function listPosts(session: Session, bookId: string, accountName: string):
     }
   };
 
-  let items = await page(session, `/mp/chapters?bookId=${encodeURIComponent(bookId)}&count=${PAGE_SIZE}&offset=0&pf=android&synckey=0`);
+  let items = await page(caller, `/mp/chapters?bookId=${encodeURIComponent(bookId)}&count=${PAGE_SIZE}&offset=0&pf=android&synckey=0`);
   add(items);
-  if (!items.length) add(await page(session, `/article/list?bookId=${encodeURIComponent(bookId)}&synckey=0`));
+  if (!items.length) add(await page(caller, `/article/list?bookId=${encodeURIComponent(bookId)}&synckey=0`));
   if (!posts.length) {
-    const cover = await callApi(session, `/mp/cover?bookId=${encodeURIComponent(bookId)}`, { timeoutMs: 15_000 }).catch(() => null);
+    const cover = await caller((session) => callApi(session, `/mp/cover?bookId=${encodeURIComponent(bookId)}`, { timeoutMs: 15_000 }))
+      .catch((error) => {
+        if (endsCheck(error)) throw error;
+        return null;
+      });
     const reviewId = typeof cover?.reviewId === "string" ? cover.reviewId : "";
     if (reviewId) add([{ reviewId, title: cover?.title, createTime: cover?.createTime, cover: cover?.pic ?? cover?.avatar }]);
   }
   const resolved: Post[] = [];
   for (const post of posts) {
-    const filled = await resolveMissing(session, post);
+    const filled = await resolveMissing(caller, post);
     if (filled.url) resolved.push(filled);
   }
   return resolved;
 }
 
 /** The article HTML WeRead's reader shows, reduced to the article's own content. */
-async function articleHtml(session: Session, reviewId: string): Promise<string | null> {
+async function articleHtml(caller: PooledCaller, reviewId: string): Promise<string | null> {
   if (!reviewId) return null;
-  const answer = await call(`${ENDPOINTS.web}/web/mp/content?reviewId=${encodeURIComponent(reviewId)}`, {
+  // The reader's page takes the mobile login's cookie, so it is one of that login's paced requests.
+  const answer = await caller((session) => call(`${ENDPOINTS.web}/web/mp/content?reviewId=${encodeURIComponent(reviewId)}`, {
     headers: {
       "user-agent": WEB_UA,
       cookie: cookieOf(session),
@@ -174,7 +193,7 @@ async function articleHtml(session: Session, reviewId: string): Promise<string |
     },
     timeoutMs: 20_000,
     maxBytes: 8 * 1024 * 1024,
-  });
+  }));
   if (answer.status !== 200) {
     // A refusal here is classified like any other: auth/verify/throttle end the check, other answers
     // leave the body to be asked for again while the post is recent.
@@ -196,15 +215,15 @@ async function articleHtml(session: Session, reviewId: string): Promise<string |
 }
 
 /** The body, and when it is missing for a reason that may pass, that reason. */
-async function fetchBody(session: Session, post: Post): Promise<{ html: string | null; text: string | null; passing: string | null }> {
+async function fetchBody(caller: PooledCaller, post: Post): Promise<{ html: string | null; text: string | null; passing: string | null }> {
   try {
-    const raw = await articleHtml(session, post.reviewId);
+    const raw = await articleHtml(caller, post.reviewId);
     if (!raw) return { html: null, text: null, passing: null };
     const html = sanitizeBody(raw, post.url);
     const text = stripTags(html).trim();
     return text ? { html, text, passing: null } : { html: null, text: null, passing: null };
   } catch (error) {
-    if (error instanceof WereadError && (error.kind === "auth" || error.kind === "verify" || error.kind === "throttled")) throw error;
+    if (endsCheck(error)) throw error;
     return { html: null, text: null, passing: String(error instanceof Error ? error.message : error).slice(0, 200) };
   }
 }
@@ -220,9 +239,8 @@ export async function collectSource(sourceId: string, reason: "schedule" | "manu
   const firstCheck = !source.cursor?.lastCheckedAt;
   let created = 0;
   try {
-    const session = await borrowAccount();
-    if (!session) throw new WereadError("账号池中没有可用的微信读书账号，请先在后台扫码登录", "auth");
-    const posts = await listPosts(session, bookId, source.name);
+    const caller = pooledCaller();
+    const posts = await listPosts(caller, bookId, source.name);
     let fetched = 0;
     for (const post of posts) {
       if (fetched >= MAX_NEW_PER_CHECK) break;
@@ -236,7 +254,7 @@ export async function collectSource(sourceId: string, reason: "schedule" | "manu
         && Date.now() - known.discovered_at.getTime() < BODY_RETRY_WINDOW_MS;
       if (known && !retryBody) continue;
       fetched += 1;
-      const body = await fetchBody(session, post);
+      const body = await fetchBody(caller, post);
       if (known && !body.text) {
         const retry = body.passing
           ? sql`jsonb_set(raw, '{weread,bodyRetry}', ${sql.json({ attempts: known.retry!.attempts + 1, error: body.passing })})`
@@ -279,7 +297,15 @@ export async function collectSource(sourceId: string, reason: "schedule" | "manu
     return { sourceId, status: "ok", found: posts.length, created };
   } catch (error) {
     const text = String(error instanceof Error ? error.message : error).slice(0, 500);
-    const passing = error instanceof WereadError && (error.kind === "network" || error.kind === "throttled" || error.kind === "verify");
+    // The pool had nothing to give this cycle (every login cooling or out of its hour budget). That is
+    // not the source failing: keep its health, record why this check was skipped, and check again next
+    // scheduling cycle instead of retrying into the cooldown.
+    if (error instanceof WereadError && error.kind === "throttled") {
+      await sql`UPDATE sources SET last_fetch_at = now(), last_error = ${text}, updated_at = now() WHERE id = ${sourceId}`;
+      await sql`UPDATE fetch_runs SET status = 'skipped', finished_at = now(), new_count = ${created}, error = ${text} WHERE id = ${run!.id}`;
+      return { sourceId, status: "cooling", error: text };
+    }
+    const passing = error instanceof WereadError && (error.kind === "network" || error.kind === "verify");
     await sql`
       UPDATE sources SET last_fetch_at = now(), last_error = ${text},
         fail_count = CASE WHEN ${passing} THEN fail_count ELSE fail_count + 1 END,
@@ -291,8 +317,12 @@ export async function collectSource(sourceId: string, reason: "schedule" | "manu
   }
 }
 
-/** Every enabled WeRead-managed account is checked once per its interval. */
-export async function scheduleCollect(now = new Date()): Promise<{ enqueued: number; skipped?: string }> {
+/** Every enabled WeRead-managed account is checked once per its interval, each queued with a random
+ * 0–120s delay so a round of due sources does not land on one login in the same minute. */
+export async function scheduleCollect(
+  now = new Date(),
+  random: () => number = Math.random,
+): Promise<{ enqueued: number; skipped?: string }> {
   // Dajiala already collects mp_account sources when it is configured; two collectors would double-read.
   if (dajialaConfigured()) return { enqueued: 0, skipped: "dajiala" };
   const rows = await sql<{ id: string; last: string | null; interval_minutes: number; config: Record<string, unknown> }[]>`
@@ -302,7 +332,10 @@ export async function scheduleCollect(now = new Date()): Promise<{ enqueued: num
     if (!isWereadBookId(source.config.ghid)) continue;
     const since = source.last ? now.getTime() - Date.parse(source.last) : Infinity;
     if (since <= source.interval_minutes * 60_000) continue;
-    await enqueueOn(collectQueue, { sourceId: source.id, reason: "schedule" }, { singletonKey: `weread-mp:${source.id}` });
+    await enqueueOn(collectQueue, { sourceId: source.id, reason: "schedule" }, {
+      singletonKey: `weread-mp:${source.id}`,
+      startAfter: Math.floor(random() * STAGGER_SECONDS),
+    });
     enqueued += 1;
   }
   return { enqueued };

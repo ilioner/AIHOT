@@ -15,6 +15,7 @@ import { unsupportedConfig } from "./config-keys.ts";
 import { admitListing, filterPublicationWindow } from "./filters.ts";
 import { fetchJsonList } from "./json-list.ts";
 import { fetchWebSearch } from "./web-search.ts";
+import { fetchAiList } from "./ai-list.ts";
 import { fetchXSearch, planXShards, readXSearch, shardHandle, shardQuery, selfThreadHandle, SHARDABLE_SQL, tweetToCandidate, type XBacklog } from "./x.ts";
 import { FetchError, type Candidate, type SourceRow } from "./types.ts";
 
@@ -346,6 +347,14 @@ export async function collectSource(sourceId: string, opts: { force?: boolean; x
       paidReceiptIds = w.receiptIds;
       detail = { results: candidates.length + w.ads, organic: candidates.length, ads: w.ads };
     }
+    else if (source.kind === "ai_list") {
+      // One paid model call over the page's own link inventory. Like a web search it states no date, so
+      // entries enter undated; unlike it, the entry is the material and its target page is never read.
+      const w = await fetchAiList(source);
+      candidates = w.candidates;
+      paidReceiptIds = w.receiptIds;
+      detail = { links: w.links, items: candidates.length, dropped: w.dropped, receiptIds: w.receiptIds };
+    }
     else {
       const x = await fetchXSearch(source, opts.xSince);
       candidates = x.candidates;
@@ -515,7 +524,7 @@ async function scheduleXShards(): Promise<number> {
 export async function scheduleDueSources(): Promise<{ enqueued: number; shards: number }> {
   const rows = await sql<{ id: string }[]>`
     SELECT id FROM sources
-    WHERE enabled AND kind IN ('rss', 'web_list', 'json_list', 'web_search', 'x_search') AND (next_fetch_at IS NULL OR next_fetch_at <= now()) AND NOT (${sharded()})
+    WHERE enabled AND kind IN ('rss', 'web_list', 'json_list', 'web_search', 'ai_list', 'x_search') AND (next_fetch_at IS NULL OR next_fetch_at <= now()) AND NOT (${sharded()})
     ORDER BY next_fetch_at NULLS FIRST LIMIT 40`;
   let enqueued = 0;
   for (const r of rows) {
@@ -532,9 +541,9 @@ const shardMinutes = (mode: string) => X_SHARD_MINUTES[mode] ?? 60;
 /**
  * Daily: adapt each source's interval to its recent output (active 15 min … quiet 120 min).
  * hot_signal sources are allowed to be slower.
- * A paid web search keeps the interval its operator set, so it is not read here: a search that always
- * finds results would look busy and be pushed to 15 minutes, and its receipt's day bucket would pay for
- * one query a day while the rest were dispatched to be refused.
+ * Paid sources (web_search and ai_list) keep the interval their operator set, so they are not read here:
+ * one that always finds results would look busy and be pushed to 15 minutes, and every run would be
+ * dispatched just to be refused by the provider budget.
  */
 export async function adaptIntervals(): Promise<{ updated: number }> {
   const rows = await sql<Array<Pick<SourceRow, "id" | "participation_mode" | "kind" | "config" | "cursor"> & { paid_listing: boolean; per_day: number }>>`

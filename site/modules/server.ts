@@ -2,5 +2,6 @@
 import type { ServerModule } from "@aihot/backend/modules";
 import wereadMp from "@aihot/weread-mp/server";
 import sourceCatalogs from "@aihot/source-catalogs/server";
+import skillhubPush from "@aihot/skillhub-push/server";
 
-export const SERVER_MODULES: readonly ServerModule[] = [wereadMp, sourceCatalogs];
+export const SERVER_MODULES: readonly ServerModule[] = [wereadMp, sourceCatalogs, skillhubPush];

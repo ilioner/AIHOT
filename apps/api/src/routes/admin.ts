@@ -6,7 +6,6 @@ import type { AdminSourceUpdate } from "@aihot/contracts/admin";
 import { actorOf } from "@aihot/backend/admin/auth";
 import { navCounts } from "@aihot/backend/admin/navigation";
 import { listAudit } from "@aihot/backend/audit";
-import { importSelectBenchRun, listSelectBenchRuns, selectBenchRun } from "@aihot/backend/admin/selectbench";
 import { modelsOverview, switchModel } from "@aihot/backend/admin/models";
 import { applyPrefilterPass, previewPrefilterPass, contentChain, overrideFields, rerun, listContent, setSeoIndexed, setVisibility } from "@aihot/backend/admin/content";
 import { detachFromFact, mergeStories } from "@aihot/backend/events/corrections";
@@ -14,7 +13,7 @@ import { banFeedbackEmail, banSource, eraseFeedback, feedbackScreenshot, listFee
 import { requeueFailedArticles, runsOverview } from "@aihot/backend/admin/runs";
 import { resolveDelivery } from "@aihot/backend/notify/deliver";
 import { releaseReceipt } from "@aihot/backend/operations/recover";
-import { replaceContactQr, setTargetEnabled, settingsOverview, updateBudget, updateCategories } from "@aihot/backend/admin/settings";
+import { settingsOverview, updateBudget, updateCategories } from "@aihot/backend/admin/settings";
 import { createSource, fetchNow, listSources, previewSource, previewStoredSource, sourceDetail, updateSource } from "@aihot/backend/admin/sources";
 import { sendProblem } from "../http/respond.ts";
 import { adminHandler } from "./admin-auth.ts";
@@ -27,12 +26,6 @@ export const param = (req: FastifyRequest, name: string) => (req.params as Recor
 const notFound = (req: FastifyRequest, reply: FastifyReply) => sendProblem(req, reply, { status: 404, code: "not_found", detail: "Not found." });
 export const orNotFound = <T>(req: FastifyRequest, reply: FastifyReply, value: T | null) => (value === null || value === undefined ? notFound(req, reply) : value);
 export const page = (req: FastifyRequest) => Math.max(1, Number(q(req).page) || 1);
-
-function decodeImage(dataUrl: unknown): Buffer {
-  const m = /^data:image\/(png|jpeg|webp);base64,(.+)$/s.exec(String(dataUrl ?? ""));
-  if (!m) throw Object.assign(new Error("image must be a PNG, JPEG or WebP data URL"), { statusCode: 400 });
-  return Buffer.from(m[2]!, "base64");
-}
 
 export function registerAdmin(app: FastifyInstance) {
   // Sources
@@ -100,14 +93,6 @@ export function registerAdmin(app: FastifyInstance) {
   // Settings
   app.get("/api/admin/settings", adminHandler(async () => settingsOverview()));
   app.put("/api/admin/settings/categories", adminHandler(async (req, _reply, admin) => updateCategories(body(req) as never, actorOf(admin))));
-  app.post("/api/admin/settings/contact-qr", adminHandler(async (req, _reply, admin) => {
-    const b = body<{ slot: "wechatQr" | "feishuQr"; image: string }>(req);
-    return replaceContactQr({ slot: b.slot, data: decodeImage(b.image) }, actorOf(admin));
-  }));
-  app.post("/api/admin/notify-targets/:key", adminHandler(async (req, reply, admin) => {
-    const b = body<{ enabled: boolean; reason: string }>(req);
-    return orNotFound(req, reply, await setTargetEnabled(param(req, "key"), !!b.enabled, b.reason, actorOf(admin)));
-  }));
   app.put("/api/admin/budgets/:service", adminHandler(async (req, _reply, admin) => updateBudget(param(req, "service"), body(req) as never, actorOf(admin))));
 
 
@@ -116,17 +101,6 @@ export function registerAdmin(app: FastifyInstance) {
   app.post("/api/admin/models/:capability", adminHandler(async (req, _reply, admin) => {
     const b = body<{ model: string | null; reason: string }>(req);
     return switchModel(param(req, "capability"), b.model ?? null, String(b.reason ?? ""), actorOf(admin));
-  }));
-
-  // SelectBench
-  app.get("/api/admin/selectbench", adminHandler(async () => ({ runs: await listSelectBenchRuns() })));
-  app.get("/api/admin/selectbench/:id", adminHandler(async (req, reply) => {
-    const f = q(req);
-    return orNotFound(req, reply, await selectBenchRun(param(req, "id"), { model: f.model, outcome: f.outcome, stratum: f.stratum, disagree: f.disagree === "1" }));
-  }));
-  app.post("/api/admin/selectbench/import", adminHandler(async (req, _reply, admin) => {
-    const b = body<{ label: string; report: unknown }>(req);
-    return importSelectBenchRun(b.report, String(b.label || "导入的对比运行"), actorOf(admin));
   }));
 
   // Attention counts for the navigation, and the audit trail.

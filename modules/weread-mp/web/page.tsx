@@ -18,6 +18,21 @@ interface Account {
   lastUsedAt: string | null;
   lastError: string | null;
   createdAt: string;
+  nextAllowedAt: string | null;
+  requestsHour: number;
+  hourlyBudget: number;
+  cooldownLevel: number;
+}
+
+interface Pool {
+  total: number;
+  ready: number;
+  cooling: number;
+  reauth: number;
+  nextAt: string | null;
+  requestsThisHour: number;
+  hourlyBudget: number;
+  intervalMs: number;
 }
 
 interface ManagedSource {
@@ -67,6 +82,7 @@ async function getJson<T>(path: string): Promise<T> {
 export default function WereadAdmin() {
   const { run, pending } = useAdminAction();
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [pool, setPool] = useState<Pool | null>(null);
   const [sources, setSources] = useState<ManagedSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [login, setLogin] = useState<Login | null>(null);
@@ -78,10 +94,11 @@ export default function WereadAdmin() {
   const refresh = useCallback(async () => {
     try {
       const [a, s] = await Promise.all([
-        getJson<{ accounts: Account[] }>("/api/admin/weread/accounts"),
+        getJson<{ accounts: Account[]; pool: Pool }>("/api/admin/weread/accounts"),
         getJson<{ sources: ManagedSource[] }>("/api/admin/weread/sources"),
       ]);
       setAccounts(a.accounts);
+      setPool(a.pool);
       setSources(s.sources);
     } catch (error) {
       toast(String(error instanceof Error ? error.message : error), "error");
@@ -186,7 +203,7 @@ export default function WereadAdmin() {
   return (
     <AdminPage
       title="微信读书采集"
-      subtitle="扫码登录一个微信读书账号，再用它添加公众号、抓取文章。账号与凭据只保存在本站后端，页面上不会显示 Token。"
+      subtitle="扫码登录微信读书账号，再用它添加公众号、抓取文章。可以扫码加多个账号分摊请求、互相接替冷却。账号与凭据只保存在本站后端，页面上不会显示 Token。"
     >
       <div className="grid gap-5 xl:grid-cols-2">
         <Card title="扫码登录" right={login && !ENDED.includes(login.status) ? <Badge tone="warn">{login.status === "scanned" ? "已扫码" : "等待扫码"}</Badge> : undefined}>
@@ -218,7 +235,24 @@ export default function WereadAdmin() {
           </div>
         </Card>
 
-        <Card title="账号池" right={<Button size="sm" tone="ghost" onClick={() => void refresh()}>刷新</Button>}>
+        <Card
+          title="账号池"
+          right={
+            <div className="flex flex-wrap items-center gap-2">
+              {pool && (
+                <>
+                  <Badge tone={pool.ready > 0 ? "ok" : pool.total > 0 ? "warn" : "muted"}>
+                    可用 {pool.ready}/{pool.total}
+                  </Badge>
+                  {pool.nextAt && <span>下一个可请求 {ago(pool.nextAt)}</span>}
+                  <span>本小时共 {pool.requestsThisHour}/{pool.hourlyBudget} 次</span>
+                  <span>间隔约 {(pool.intervalMs / 1000).toFixed(1)} 秒</span>
+                </>
+              )}
+              <Button size="sm" tone="ghost" onClick={() => void refresh()}>刷新</Button>
+            </div>
+          }
+        >
           <DataTable
             rows={accounts}
             rowKey={(a) => a.id}
@@ -244,6 +278,21 @@ export default function WereadAdmin() {
                   <div>
                     <Badge tone={STATUS[a.status].tone}>{STATUS[a.status].label}</Badge>
                     {a.status === "cooling" && a.cooldownUntil && <div className="mt-1 text-[11.5px] text-ink-4">{ago(a.cooldownUntil)}恢复</div>}
+                    {a.cooldownLevel > 0 && <div className="mt-1 text-[11.5px] text-ink-4">冷却等级 {a.cooldownLevel}</div>}
+                  </div>
+                ),
+              },
+              {
+                key: "pacing",
+                label: "节奏",
+                render: (a) => (
+                  <div>
+                    <div className="text-ink-2">
+                      本小时 <span className="num">{a.requestsHour}</span>/<span className="num">{a.hourlyBudget}</span>
+                    </div>
+                    <div className="mt-1 text-[11.5px] text-ink-4">
+                      {a.nextAllowedAt ? <>{ago(a.nextAllowedAt)}可请求</> : "现在可请求"}
+                    </div>
                   </div>
                 ),
               },

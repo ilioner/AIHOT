@@ -9,7 +9,7 @@ import { bookInfo, isLinkOrBiz, resolveBookId, searchAccounts } from "../backend
 import { listManagedSources } from "../backend/collect.ts";
 import { WereadError } from "../backend/http.ts";
 import { pollLogin, startLogin } from "../backend/login.ts";
-import { accountRow, activateSession, deleteAccount, listAccounts, refreshAccount } from "../backend/pool.ts";
+import { accountPool, accountRow, activateSession, deleteAccount, refreshAccount } from "../backend/pool.ts";
 import { isWereadBookId } from "../backend/wechat.ts";
 
 const badRequest = (message: string) => Object.assign(new Error(message), { statusCode: 400 });
@@ -32,7 +32,7 @@ const AddBody = z.object({
 const IdParams = z.object({ id: z.coerce.number().int().positive() });
 
 export function registerWereadRoutes(app: FastifyInstance): void {
-  app.get("/api/admin/weread/accounts", handler(async () => ({ accounts: await listAccounts() })));
+  app.get("/api/admin/weread/accounts", handler(async () => accountPool()));
 
   app.delete("/api/admin/weread/accounts/:id", handler(async (req, reply) => {
     const { id } = IdParams.parse(req.params);

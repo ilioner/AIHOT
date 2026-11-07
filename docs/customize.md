@@ -77,7 +77,7 @@
 
 | 字段 | 含义 |
 |---|---|
-| `kind` | `rss`、`web_list`（网页列表，配选择器）、`json_list`（JSON 接口）、`web_search`（网页搜索，配关键词，需要 Fathom）、`x_search`（X 账号，需要 SocialData）、`mp_account`（公众号，需要极致了）、`external`（外部推送） |
+| `kind` | `rss`、`web_list`（网页列表，配选择器）、`json_list`（JSON 接口）、`web_search`（网页搜索，配关键词，需要 Fathom）、`ai_list`（AI 抽取列表，填链接和提示词，用预设模型抽条目）、`x_search`（X 账号，需要 SocialData）、`mp_account`（公众号，需要极致了）、`external`（外部推送） |
 | `config` | 每种信源的配置，见 [信源](sources.md) |
 | `tier` | 信源分级：`T1` 官方一手、`T1_5` 官方账号与准官方、`T2` 媒体与个人、`EXCLUDE_MP` 不参与精选。不同分级的入选门槛不同。`T1` 就是“一手”，不用另外标 |
 | `owner_entity_id` | 可选，这个信源属于哪家公司（`ENTITIES` 的 id）。同一家公司的几个信源在热度里只算一个参与方；`T1_5` 的官方账号要当代表报道，也要填它（见 [信源](sources.md)） |
@@ -86,6 +86,36 @@
 | `syndicate_fulltext` | 全文 RSS 能不能带正文。**默认关**；只在站内也展示全文时生效，来源明确允许转载时才打开 |
 
 中国大陆的很多行业，一手信息在公众号上。公众号信源需要极致了（Dajiala）的 key，按请求计费，有预算熔断。
+
+### AI 抽取列表（`ai_list`）
+
+后台“新建信源”里类型选“AI 抽取列表”，填页面地址和提示词，让站点预设的结构化模型把页面里的条目抽成列表。适合没有 RSS、没有固定 JSON、但页面上已经列着一批资源的目录页；不适合要逐篇读正文的站点。
+
+能填的配置项：
+
+| 配置项 | 含义 |
+|---|---|
+| `url` | 必填，要抽的页面地址（HTTP/HTTPS） |
+| `prompt` | 必填，抽取要求：抽哪一块、保留哪些字段 |
+| `baseUrl` | 可选，相对链接的解析基准；不填就用 `url` 的 origin |
+| `maxItems` | 可选，1–200，默认 60，最多抽出多少条 |
+| `maxLinks` | 可选，20–800，默认 400，最多把页面里的多少个链接交给模型 |
+
+其余是通用键（`_aihot`、`ingestNoiseFilter`、`itemUrlPrefixRewrite`、`allowUrlPrefixes`、`denyUrlPrefixes`、`publishedAtUtcOffset`、`acceptLanguage`、发布者相关键）。它不接 `detail` 和 `publishedAfter`：抽取结果通常没有发布日期，不做正文读取。
+
+费用与失败：
+
+- **一次采集 = 一次付费模型调用**，和其他模型调用一样走回执与预算熔断。后台预览也会真的调用一次模型并计入预算，所以预览按钮上会写明“一次模型调用”；采集间隔由运营按预算自己设，不会像免费信源那样自动调整。
+- 采集只读这一张页面，把页面里的链接清单交给模型；模型返回的条目必须命中页面上的链接（或 `allowUrlPrefixes`），编造的地址会被丢弃，超过 `maxItems` 的不收。不抓目标站正文，条目通常没有发布时间。
+- 页面上没有任何链接、模型输出不是要求的结构、模型不可用或预算用尽，这次采集都算失败：`fetch_runs` 记为失败、信源健康度退化，不写半成品。预览会把中文原因直接显示出来。
+
+prompt 写法建议：
+
+- 先说位置，再说保留什么。例如：“抽出侧栏每个分类下的全部资源，保留名称和一句简介。”
+- 要求模型只从给出的链接里选，不要自己补地址，也不要让它去访问目标站正文。
+- 模型能返回的字段只有 `title`、`url`、`summary`；`summary` 会当作摘要，不要要求它写整段正文。
+
+**“默认 PASS / 目录直发”不是后台开关。** 一个信源是否跳过预筛和评分直接发布，由 `industry/selection.ts` 的 `directorySources` 决定（目前示例站里是 `catalog-360-topics`、`catalog-uisdc-nav` 这类目录信源）。`ai_list` 默认走正常的预筛、评分和写作，不会默认 PASS；要改发布策略就改那个文件，后台没有对应开关。
 
 ## 4. 精选标准：`industry/prompts/`
 
@@ -117,7 +147,7 @@
 
 1. 从你的信源里挑 100–200 条资料，自己标“该选 / 不该选”，存成 `.data/gold.jsonl`（格式见 [精选与校准](selection.md)，`industry/gold.example.jsonl` 有两条示例）。
 2. 运行 `node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl`，看准确率、查准率、查全率，和不同门槛下的结果。
-3. 在后台 SelectBench 里逐条看判错的资料，回去改评分提示词或门槛，再跑一遍。
+3. 在 `.data/eval/` 的报告里逐条看判错的资料，回去改评分提示词或门槛，再跑一遍。
 
 这一步决定了你的站“选得准不准”。
 
@@ -131,7 +161,7 @@
   npm pack @fontsource/noto-sans-sc@5.3.0 && tar xzf fontsource-noto-sans-sc-5.3.0.tgz
   node scripts/nameplates.ts package
   ```
-- 关于页的二维码：先在 `site.ts` 的 `ABOUT.maker` 写好作者块，并写上 `wechat`、`feishu` 卡片（标题和说明）；再在后台“设置 → 关于页二维码”上传图片，或者把图片放进 `site/brand/contact/`，文件名以 `qr-wechat`、`qr-feishu` 开头，格式是 png、jpg 或 webp。作者块、卡片或图片缺一样，那张二维码就不显示。
+- 关于页的作者块：在 `site.ts` 的 `ABOUT.maker` 写 `name` 和 `greeting`（可选 `avatarSourceId`，头像取那个 X 账号信源的头像）；不写这个块，关于页就不显示它。
 
 请不要使用 AIHOT 的名字和 Logo。
 

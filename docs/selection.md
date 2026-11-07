@@ -21,6 +21,8 @@
 
 使用者随后确认 `catalog-360-topics`（360 AI · 专题推荐）改为**目录直接公开**，优先于下面的预筛策略。该来源的新旧资料均采用源站标题、已有简介与链接，无简介也公开，不再受 UNKNOWN／BLOCK、拦截标签、材料长度和 writer none 限制；不调用模型、不评分、不自动归组、不自动入精选。目录配置及默认“AI 工具”类别在 `industry/selection.ts`。人工下架、人工摘要范围与全文版权限制仍生效，原分析、回执与时间不改。其他五个来源只直通预筛，其他非指定来源继续严格审核。
 
+2026-11-06 使用者再确认 `catalog-uisdc-nav`（优设 · AI 导航，<https://hao.uisdc.com/ai/>）走同一套**目录直接公开**：单页 20 个分类块（热门推荐、Agent 智能体、AI 绘画……探索更多）解析出 288 条唯一资源，只收目录已有的名称、简介、标签和图标，不抓目标站正文、不请求模型，费用 0。身份是目标地址的归一化形式，同一资源出现在多个分类时只留第一条及其分类标签；无发布日期的目录条目按首次发现时间入「全部动态」，不自动入精选或事件。后台新增的 `ai_list`（AI 抽取列表）信源类型**不在**这个名单里，它只负责抽取列表，发布仍走正常的预筛、评分和写作。
+
 使用者确认 `industry/selection.ts` 的 `prefilterPassSources` 包含：`weblist-aixzd-tools`、`catalog-aihot-tip`、`catalog-aibase`、`catalog-360-topics`、`catalog-360-student`、`catalog-360-teacher`。这六个来源按 ID 精确匹配，默认预筛 PASS，不请求预筛模型；不是所有目录源或同名来源都直通。
 
 来源放行与模型判断分开记录：新分析保存来源策略 PASS 和绑定来源 ID、当前材料版本的 `sourcePrefilter`，历史原始 UNKNOWN／BLOCK 与收费回执保持原样。新旧资料继续评分、结构分类与通用模型写作；材料不足、分析失败、写作无效、拦截标签和人工下架仍不可公开，精选门槛不变。公开层复核来源证据，不能用旧版本或其他来源的放行记录公开。历史重入队命令见 [部署更新](deploy.md#更新)，不会删除资料或重新全量抓取。
@@ -99,7 +101,7 @@ export const SELECTION = {
 ### 2. 跑评测
 
 ```bash
-node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl --split development --label "第一版评分标准"
+node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl --split development
 ```
 
 对每条样本跑一遍预筛和两次评分，输出：
@@ -108,23 +110,21 @@ node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl --split d
 - **覆盖率**：成功得到入选决定的样本占全部非 `either` 金标样本的比例；**完整准确率**则用全部非 `either` 金标样本作分母，把模型失败或回答不合格式也算作没有正确完成；
 - `either` 始终不进入上述质量指标的分母；报告另外记录决定样本失败数与 `either` 失败数。`goldSelectRate` 按全部非 `either` 金标计算，因此同一批样本在不同模型间应保持一致；
 - 门槛从 40 到 90 每隔 2 分（范围可以在下面说的 `DEPLOYMENT.selectionGold` 里改），各自会得到什么结果；门槛扫描同样同时报告有效输出准确率、覆盖率和完整准确率；
-- 判错的条目，完整报告写到 `.data/eval/`，同时导入后台 SelectBench（加 `--no-import` 不导入）。
+- 判错的条目，完整报告写到 `.data/eval/`。
 
-不传 `--models` 时，评测用“精选评分”这一步线上正在用的模型：后台“模型与评测”页切换过的优先，其次是环境变量 `SCORE_MODEL`，再其次是 `site/models.ts` 的 `DEFAULTS.score`，都没有就用默认模型（`.env` 里的 `LLM_*`）。`--models default,deepseek-flash` 可以在同一批样本上比较几个模型。其他常用参数：`--n 200` 最多抽多少条，`--split holdout` 只跑留出集，`--no-import` 不导入 SelectBench。在 `site/site.ts` 的 `DEPLOYMENT.selectionGold` 里写好样本文件、抽样条数、只抽哪一份和门槛扫描范围，以后不带参数运行就用这一套。
+不传 `--models` 时，评测用“精选评分”这一步线上正在用的模型：后台“模型与评测”页切换过的优先，其次是环境变量 `SCORE_MODEL`，再其次是 `site/models.ts` 的 `DEFAULTS.score`，都没有就用默认模型（`.env` 里的 `LLM_*`）。`--models default,deepseek-flash` 可以在同一批样本上比较几个模型。其他常用参数：`--n 200` 最多抽多少条，`--split holdout` 只跑留出集。在 `site/site.ts` 的 `DEPLOYMENT.selectionGold` 里写好样本文件、抽样条数、只抽哪一份和门槛扫描范围，以后不带参数运行就用这一套。
 
 同一次评测里，不同样本渲染出完全相同的评分输入时，只共享模型的评分结果，各样本仍按自己的预筛结果、信源分级门槛和标注独立计分；失败的结果也在这次运行里共享，这样第一次跑和用已有结果重跑覆盖的样本一样。重复运行会复用已有回执。报告里的 token 用量和平均耗时，按相关回执的全部请求尝试汇总，解析失败后的重试也算在内；用已有结果重跑时，显示的是这些回执累计的用量，不代表这次新增的费用。
 
 ### 3. 看错例，改标准，再跑
 
-在后台 SelectBench 里逐条看判错的资料和模型给的理由：
-
-上传多模型报告时，同一 `caseId` 在各模型下须使用相同的 `gold` 标注，模型的 `decision` 可以不同。标注冲突的报告会在写入前被拒绝，避免同一条资料在并排比较时出现不同的人工答案；不提供逐例 `cases` 的报告仍可导入。
+在 `.data/eval/` 的报告里逐条看判错的资料：
 
 - 该选没选上，多半是评分标准里没说清它为什么重要：在 `selection-score.md` 引用的共同规则 `selection-score-rules.md` 里，把这类价值写进“必须正常评价”的部分，给出例子；chat 和 SystemOne 一起生效。
 - 不该选却选上了，多半是噪声没压住：在同一份共同规则里写进“必须压住”的部分。
 - 整体偏松或偏紧，而判错的条目分数都贴着门槛，再调 `industry/selection.ts` 的门槛。
 
-先改标准，再动门槛：门槛只能整体移动，解决不了“哪一类判错了”。每改一次跑一遍，SelectBench 里能看到每一版的对比。比较模型时不要只看有效输出 F1：如果覆盖率明显不同，还要一起看完整准确率；高分但经常无法完成结构化判断的模型，不应被失败样本从分母里“隐藏”掉。
+先改标准，再动门槛：门槛只能整体移动，解决不了“哪一类判错了”。比较模型时不要只看有效输出 F1：如果覆盖率明显不同，还要一起看完整准确率；高分但经常无法完成结构化判断的模型，不应被失败样本从分母里“隐藏”掉。
 
 ## 换模型
 
@@ -143,7 +143,7 @@ SystemOne 不返回生成式解释，预筛的 `reason` 留空，评分仍只产
 先由使用者填好有效 key、确认后台 `dashscope` 预算，再做同批对比，例如：
 
 ```bash
-node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl --models default,decision-model-preview --split development --label "SystemOne 同批对比"
+node --env-file=.env scripts/eval-selection.ts --gold .data/gold.jsonl --models default,decision-model-preview --split development
 ```
 
 这是付费请求路径的一次真实评测，不承诺免费或更准确；填写配置前并没有完成实测。与现有模型比较有效输出质量、覆盖率、完整准确率、耗时与回执用量，再决定是否切换；若要调权重或门槛，仍按前面的金标校准流程来。

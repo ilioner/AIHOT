@@ -11,12 +11,14 @@ import { enqueue, QUEUES } from "../jobs/queue.ts";
 import { republishKey, requestRepublish } from "../jobs/publication.ts";
 import { normalizeUrl } from "../lib/url.ts";
 import { serverModules } from "../modules.ts";
+import { fetchAiList } from "../sources/ai-list.ts";
 import { fetchJsonList } from "../sources/json-list.ts";
 import { fetchRss } from "../sources/rss.ts";
 import { assertSupportedConfig, UnsupportedConfig } from "../sources/config-keys.ts";
 import { enrichDetails, listingEntries, storedDetails } from "../sources/collect.ts";
 import { filterPublicationWindow } from "../sources/filters.ts";
 import { FetchError, type Candidate, type SourceRow } from "../sources/types.ts";
+import { failureKind } from "../providers/receipts.ts";
 import { fetchWebList } from "../sources/web-list.ts";
 import { fetchWebSearch } from "../sources/web-search.ts";
 import { fetchXSearch } from "../sources/x.ts";
@@ -89,12 +91,19 @@ export async function previewSource(draft: Pick<SourceRow, "id" | "kind" | "conf
   const source = { name: draft.id, enabled: true, cursor: null, tier: "T2", participation_mode: "editorial", ...draft } as SourceRow;
   assertSupportedConfig(source.kind, source.config);
   const started = performance.now();
-  let found;
+  let found: Candidate[];
+  let paidModelCall = false;
   if (source.kind === "rss") found = (await fetchRss(source, { force: true })).candidates;
   else if (source.kind === "web_list") found = await fetchWebList(source);
   else if (source.kind === "json_list") found = await fetchJsonList(source);
   else if (source.kind === "web_search") found = (await fetchWebSearch(source)).candidates;
   else if (source.kind === "x_search") found = (await fetchXSearch(source)).candidates;
+  else if (source.kind === "ai_list") {
+    // An extraction is the listing: one paid model call reads the page's links and picks the entries.
+    // A preview runs the same call as a collection, so the result says that it spent one.
+    found = (await previewAiList(source)).candidates;
+    paidModelCall = true;
+  }
   else throw new Error(`preview is not available for ${source.kind} sources`);
   // The listing and its detail pages as collection reads them, within the fixed publication boundary;
   // the limits of a first import and of later runs depend on the source's runs and are not previewed.
@@ -111,7 +120,30 @@ export async function previewSource(draft: Pick<SourceRow, "id" | "kind" | "conf
     ms: Math.round(performance.now() - started),
     count: candidates.length,
     items: candidates.slice(0, 20).map((c) => ({ title: c.title, url: c.url, publishedAt: c.publishedAt?.toISOString() ?? null, excerpt: (c.excerpt ?? c.bodyText ?? "").slice(0, 200) })),
+    ...(paidModelCall ? { paidModelCall: true } : {}),
   };
+}
+
+/** A paid extraction's failures, said in terms of what the operator can change. */
+async function previewAiList(source: SourceRow) {
+  try {
+    return await fetchAiList(source);
+  } catch (error) {
+    // The collector's own errors (no link on the page, an output that is not a list) already say what
+    // was wrong; the paid-call layer's errors are grouped by what they mean for the next attempt.
+    if (error instanceof FetchError) throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    switch (failureKind(error)) {
+      case "off": throw new FetchError(`模型未开启或没有配置，未产生调用：${detail}`);
+      case "budget": throw new FetchError(`模型预算已用尽，未完成调用：${detail}`);
+      case "busy": throw new FetchError(`同样的抽取正在执行，请稍后再试：${detail}`);
+      case "unusable": throw new FetchError(`模型输出不是可用的列表格式：${detail}`);
+      case "outage": throw new FetchError(`模型服务暂时不可用：${detail}`);
+      case "refused": throw new FetchError(`模型服务拒绝了这次调用：${detail}`);
+      case "unknown": throw new FetchError(`模型调用结果未知，已留在回执里等待恢复：${detail}`);
+      default: throw new FetchError(`AI 抽取列表失败：${detail}`);
+    }
+  }
 }
 
 const EDITABLE = z
@@ -219,7 +251,7 @@ const CreateSchema = z
   .object({
     id: z.string().regex(/^[a-z0-9][a-z0-9-]{2,79}$/),
     name: z.string().min(1).max(200),
-    kind: z.enum(["rss", "web_list", "json_list", "web_search", "x_search", "mp_account", "external"]),
+    kind: z.enum(["rss", "web_list", "json_list", "web_search", "ai_list", "x_search", "mp_account", "external"]),
     config: z.record(z.string(), z.unknown()),
     tier: z.enum(["T1", "T1_5", "T2", "EXCLUDE_MP"]).default("T2"),
     participation_mode: z.enum(["editorial", "hot_signal"]).default("editorial"),

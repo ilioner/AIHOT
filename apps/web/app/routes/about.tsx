@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { IntentLink } from "../components/ui/IntentLink";
 import { Link, useLoaderData } from "react-router";
-import type { SiteContact, SiteStats } from "@aihot/contracts/site";
+import type { SiteMaker, SiteStats } from "@aihot/contracts/site";
 import { ABOUT, POLICY, REPORTS, SITE, subjectAfter } from "@aihot/site";
 import { apiGet, cachedPage } from "../lib/api.server";
 import { pageReuse } from "../lib/page-reuse";
@@ -18,11 +18,11 @@ export { pageHeaders as headers } from "../lib/api.server";
 export const { clientLoader, shouldRevalidate } = pageReuse<typeof loader>();
 
 export async function loader({ request }: { request: Request }) {
-  const [contact, stats] = await Promise.all([
-    apiGet<SiteContact>("/api/site/contact", { signal: request.signal }).catch(() => null),
+  const [maker, stats] = await Promise.all([
+    apiGet<SiteMaker>("/api/site/maker", { signal: request.signal }).catch(() => null),
     apiGet<SiteStats>("/api/site/stats", { signal: request.signal }).catch(() => null),
   ]);
-  return cachedPage(300, { contact, stats });
+  return cachedPage(300, { maker, stats });
 }
 
 export function meta() {
@@ -54,6 +54,7 @@ const KIND_ORDER: Array<[string, string]> = [
   ["rss", "RSS"],
   ["web_list", "网页"],
   ["web_search", "搜索"],
+  ["ai_list", "AI 抽取"],
   ["mp_account", "公众号"],
   ["json_list", "接口"],
 ];
@@ -118,34 +119,14 @@ function MakerFace({ src }: { src: string }) {
   return <img src={src} alt={`${ABOUT.maker?.name ?? ""}的头像`} width={48} height={48} onError={() => setFailed(true)} className="size-11 shrink-0 rounded-full bg-bg-sunk object-cover ring-1 ring-line xl:size-12" />;
 }
 
-function QrCard({ src, kind, title, note }: { src: string; kind: string; title: string; note: string }) {
+/** The optional maker block (ABOUT.maker): the greeting, and the avatar the api answers with (absent, as the figures are, when it does not). */
+function Maker({ maker, avatar }: { maker: NonNullable<typeof ABOUT.maker>; avatar: string | null }) {
   return (
-    <figure className="card flex items-center gap-5 p-5">
-      <img src={src} alt={`${kind}二维码`} width={112} height={112} loading="lazy" className="size-[104px] shrink-0 rounded-tile border border-line bg-white object-contain p-1.5 sm:size-[112px]" />
-      <figcaption className="min-w-0">
-        <div className="text-[12px] text-ink-4">{kind}</div>
-        <div className="mt-1 text-[16px] font-semibold leading-snug text-ink">{title}</div>
-        <p className="mt-2 text-[13px] leading-[1.7] text-ink-3">{note}</p>
-      </figcaption>
-    </figure>
-  );
-}
-
-/**
- * The optional maker block (ABOUT.maker): a greeting on the left, the contact codes that are set on the
- * right. Without the contact settings (the api did not answer) the codes stay out, as the figures do.
- */
-function Maker({ maker, contact }: { maker: NonNullable<typeof ABOUT.maker>; contact: SiteContact | null }) {
-  const codes = [
-    contact?.wechatQr && maker.wechat ? <QrCard key="wechat" src={contact.wechatQr} kind={maker.wechat.kind} title={maker.wechat.title} note={maker.wechat.note} /> : null,
-    contact?.feishuQr && maker.feishu ? <QrCard key="feishu" src={contact.feishuQr} kind={maker.feishu.kind} title={maker.feishu.title} note={maker.feishu.note} /> : null,
-  ].filter(Boolean);
-  return (
-    <section aria-labelledby="maker" className="mt-20 grid gap-10 xl:mt-28 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-16">
+    <section aria-labelledby="maker" className="mt-20 xl:mt-28">
       <div>
         <Kicker>做这个站的人</Kicker>
         <h2 id="maker" className="mt-4 flex items-center gap-3.5 text-[26px] font-black leading-[1.3] tracking-[-0.02em] text-ink xl:gap-4 xl:text-[34px]">
-          {contact?.makerAvatar && <MakerFace src={contact.makerAvatar} />}
+          {avatar && <MakerFace src={avatar} />}
           <span>
             嗨，我是 <span className="whitespace-nowrap text-accent">{maker.name}</span>
           </span>
@@ -167,12 +148,6 @@ function Maker({ maker, contact }: { maker: NonNullable<typeof ABOUT.maker>; con
           </p>
         </div>
       </div>
-      {codes.length > 0 && (
-        <div className="grid content-start gap-3">
-          <h3 className="text-[15px] font-semibold text-ink">如果觉得有点用，欢迎加入</h3>
-          {codes}
-        </div>
-      )}
     </section>
   );
 }
@@ -192,7 +167,7 @@ function Latest({ item, className = "" }: { item: SiteStats["latest"][number] | 
 }
 
 export default function AboutPage() {
-  const { contact, stats } = useLoaderData<typeof loader>();
+  const { maker, stats } = useLoaderData<typeof loader>();
   const [focus, setFocus] = useState<number | null>(null);
   const [at, setAt] = useState(0);
   const shown = useRef(0);
@@ -269,7 +244,7 @@ export default function AboutPage() {
         </ol>
       </section>
 
-      {ABOUT.maker && <Maker maker={ABOUT.maker} contact={contact} />}
+      {ABOUT.maker && <Maker maker={ABOUT.maker} avatar={maker?.makerAvatar ?? null} />}
 
       <p className="mt-16 well rounded-card px-5 py-4 text-[13px] leading-[1.85] text-ink-3">
         {ABOUT.copyright[0]}

@@ -3,9 +3,9 @@
 // --models, the two scores deciding against the source tier's threshold — and is compared with your
 // decision. A threshold sweep shows what another threshold would have done. The gold file has one case
 // per line as eval-selection-core.ts describes; lines starting with // are skipped.
-// Usage: node --env-file=.env scripts/eval-selection.ts [--gold .data/gold.jsonl] [--models default,deepseek-flash] [--n 200] [--split all] [--label "..."]
-// Receipts make re-runs free; "either" cases are excluded from decisive metrics. Each run is also
-// imported into SelectBench (admin → SelectBench) with every case, unless --no-import is given.
+// Usage: node --env-file=.env scripts/eval-selection.ts [--gold .data/gold.jsonl] [--models default,deepseek-flash] [--n 200] [--split all]
+// Receipts make re-runs free; "either" cases are excluded from decisive metrics. Each run's full report is
+// written to .data/eval/.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -24,7 +24,6 @@ import {
   type AnalysisRun,
   type AnalyzeInputArticle,
 } from "@aihot/backend/editorial/analyze";
-import { importSelectBenchRun } from "@aihot/backend/admin/selectbench";
 import { evalModels, pmap, positiveInt, safeReportNamePart, sampleCases, usageFor } from "./eval-tools.ts";
 import { parseSelectionGoldJsonl, selectionMetrics, selectionThresholdMetrics, type SelectionDecision, type SelectionGoldRow } from "./eval-selection-core.ts";
 
@@ -43,8 +42,6 @@ const { values } = parseArgs({
     split: { type: "string", default: defaults.split },
     concurrency: { type: "string", default: "6" },
     seed: { type: "string", default: "7" },
-    label: { type: "string" },
-    "no-import": { type: "boolean", default: false },
   },
 });
 
@@ -175,8 +172,4 @@ const file = path.join(outDir, `selection-${splitName}-${sample.length}-${Date.n
 const meta = { split: values.split, n: sample.length, seed: Number(values.seed), promptVersion: SELECTION_PROMPT_VERSION, createdAt: new Date().toISOString() };
 writeFileSync(file, JSON.stringify({ meta, models: report }, null, 2));
 console.log(`report: ${file}`);
-if (!values["no-import"]) {
-  const run = await importSelectBenchRun({ meta, models: report }, values.label ?? `${values.split} ${sample.length} 条 · ${Object.keys(report).join(" / ")}`, "script:eval-selection");
-  console.log(`SelectBench run: ${run.id}`);
-}
 await closeDb();

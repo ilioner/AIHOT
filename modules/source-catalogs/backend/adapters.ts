@@ -1,10 +1,10 @@
 import * as cheerio from "cheerio";
 import { sha256 } from "@aihot/backend/lib/ids";
 import { collapseWhitespace, stripTags } from "@aihot/backend/lib/text";
-import { identityKeyForUrl } from "@aihot/backend/lib/url";
+import { identityKeyForUrl, normalizeUrl } from "@aihot/backend/lib/url";
 import type { MaterialInput } from "@aihot/backend/content/materials";
 
-export const SOURCE_IDS = ["catalog-aibase", "catalog-aihot-tip", "catalog-360-teacher", "catalog-360-student", "catalog-360-topics", "catalog-uisdc"] as const;
+export const SOURCE_IDS = ["catalog-aibase", "catalog-aihot-tip", "catalog-360-teacher", "catalog-360-student", "catalog-360-topics", "catalog-uisdc", "catalog-uisdc-nav"] as const;
 export type CatalogId = typeof SOURCE_IDS[number];
 export type CatalogItem = Omit<MaterialInput, "sourceId" | "via">;
 
@@ -16,6 +16,7 @@ export function endpoint(id: CatalogId): string {
   if (id === "catalog-aibase") return "https://app.aibase.com/zh/discover";
   if (id === "catalog-aihot-tip") return "https://aihot.news/api/v1/items?category=tip&mode=all&limit=50";
   if (id === "catalog-uisdc") return "https://www.uisdc.com/ajax.php?action=get_news&paged=1";
+  if (id === "catalog-uisdc-nav") return "https://hao.uisdc.com/ai/";
   const url = new URL(id === "catalog-360-topics" ? "https://api.aistore.360.cn/sd/topic/hotlist?page_size=8" : `https://api.aistore.360.cn/sd/topic/detail?tid=${id === "catalog-360-teacher" ? 44 : 45}`);
   url.searchParams.set("m", sha256("zhijiao-radar:360:mid").slice(0, 32));
   url.searchParams.set("m2", sha256("zhijiao-radar:360:mid2").slice(0, 44));
@@ -42,6 +43,22 @@ function link(value: unknown): string | null {
     const url = new URL(value);
     return /^https?:$/.test(url.protocol) && !url.username && !url.password ? url.href : null;
   } catch { return null; }
+}
+
+/** Absolute HTTP(S) link from a possibly relative attribute value. */
+function absoluteLink(value: unknown, base: string): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try { return link(new URL(value.trim(), base).href); } catch { return null; }
+}
+
+/** Lazy-loading markup often keeps the real image in data-src and a placeholder in src. */
+function imageLink(node: cheerio.Cheerio<any>, base: string): string | null {
+  for (const attribute of ["data-src", "data-original", "data-lazy-src", "data-lazy", "src"]) {
+    const url = absoluteLink(node.attr(attribute), base);
+    if (url) return url;
+  }
+  const srcset = node.attr("data-srcset") ?? node.attr("srcset");
+  return absoluteLink(srcset?.split(",")[0]?.trim().split(/\s+/)[0], base);
 }
 
 function entry(input: { title: unknown; summary: unknown; url: string; identityKey?: string; publishedAt?: Date | null; images?: unknown[]; iconUrl?: unknown; categories?: unknown[]; tags?: unknown[]; originalTitle?: unknown; raw: Record<string, unknown> }): CatalogItem {
@@ -79,6 +96,39 @@ export function parseCatalog(id: CatalogId, payload: string): CatalogItem[] {
     });
     if (!items.length) throw new Error("AIbase 产品卡片为空或页面结构变化");
     return [...new Map(items.map(item => [item.identityKey, item])).values()];
+  }
+  if (id === "catalog-uisdc-nav") {
+    const document = cheerio.load(payload);
+    const catalogUrl = endpoint(id);
+    const items: CatalogItem[] = [];
+    document("div.part-cat-block").each((groupId, blockNode) => {
+      const block = document(blockNode);
+      const heading = block.find("h2.c-title[id]").first();
+      const blockId = heading.attr("id")?.trim();
+      const blockName = text(heading.find(".l > strong").text()) || text(heading.find(".l").text());
+      if (!blockId || !blockName) throw new Error("优设导航分类缺少 ID 或标题");
+      block.find("div.part-item-website > a.f-box[href]").each((_, node) => {
+        const card = document(node);
+        const url = absoluteLink(card.attr("href"), catalogUrl);
+        if (!url) throw new Error(`优设导航「${blockName}」条目缺少有效链接`);
+        const iconUrl = imageLink(card.find("img").first(), catalogUrl);
+        items.push(entry({
+          title: card.find("strong.title").text() || card.find("img[alt]").attr("alt"), summary: card.find(".item-desc").text(), url,
+          identityKey: identityKeyForUrl(url) ?? undefined, images: iconUrl ? [iconUrl] : [], iconUrl,
+          categories: [blockName], tags: card.find(".item-tag .tag").map((_, tag) => document(tag).text()).get(),
+          raw: { contentKind: "tool-directory", externalId: sha256(normalizeUrl(url) ?? url), blockId, blockName, groupId,
+            catalogUrl, itemUrl: url },
+        }));
+      });
+    });
+    if (!items.length) throw new Error("优设导航分类为空或页面结构变化");
+    // One resource may sit in several categories: keep the first occurrence and its labels.
+    const seen = new Set<string | undefined>();
+    return items.filter(item => {
+      if (seen.has(item.identityKey)) return false;
+      seen.add(item.identityKey);
+      return true;
+    });
   }
   const data = JSON.parse(payload);
   if (!data || typeof data !== "object") throw new Error("信源返回无效 JSON");

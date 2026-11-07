@@ -15,6 +15,7 @@ const TEMPLATES: Record<string, Record<string, unknown>> = {
   web_list: { url: "https://example.com/blog", baseUrl: "https://example.com", itemSelector: "article", linkSelector: "a", titleSelector: "h2", allowUrlPrefixes: ["https://example.com/blog/"] },
   json_list: { url: "https://example.com/api/posts", mode: "json_api", method: "GET", itemsPath: "data.items", titlePaths: ["title"], urlTemplate: "{raw:url}", summaryPaths: ["summary"] },
   web_search: { query: "关键词", lang: "zh-CN", region: "CN", limit: 10 },
+  ai_list: { url: "https://example.com/directory", prompt: "抽出侧栏每个分类下的全部资源，保留名称和一句简介。", maxItems: 60 },
   x_search: { query: "from:handle -filter:replies", searchType: "Latest" },
   mp_account: { ghid: "gh_", nickname: "" },
   external: {},
@@ -91,6 +92,15 @@ export default function NewSource() {
               ))}
             </div>
           </div>
+          {form.kind === "ai_list" && (
+            <div className="mt-4 rounded-card bg-amber/10 px-4 py-3 text-[12.5px] text-ink-2 ring-1 ring-amber/25">
+              <div className="font-medium text-ink">AI 抽取列表：每次采集、每次预览都是一次付费模型调用，计入预算。</div>
+              <div className="mt-1">
+                模型只从页面现有的链接里挑条目，不抓目标站正文。prompt 要写清抽哪一块、保留什么，例如：<span className="text-ink">「抽出侧栏每个分类下的全部资源，保留名称和一句简介」</span>。
+                配置至少填 <code>url</code> 和 <code>prompt</code>；<code>maxItems</code>（1–200，默认 60）限制抽出条数。
+              </div>
+            </div>
+          )}
           <div className="mt-4">
             <Field label="采集配置（JSON）">
               <Textarea className="font-mono !text-[12px]" rows={10} value={config} onChange={(e) => setConfig(e.target.value)} spellCheck={false} />
@@ -112,7 +122,7 @@ export default function NewSource() {
                 if (r) setPreview(r);
               }}
             >
-              预览抓取
+              {form.kind === "ai_list" ? "预览（一次模型调用）" : "预览抓取"}
             </Button>
             <Button
               tone="primary"
@@ -137,8 +147,15 @@ export default function NewSource() {
           </div>
         </Card>
         <Card title={preview ? `预览：${preview.count} 条（${preview.ms}ms）` : "预览"}>
+          {preview?.paidModelCall && (
+            <div className="mb-3 rounded-card bg-amber/10 px-3 py-2 text-[12.5px] text-ink-2 ring-1 ring-amber/25">
+              本次预览已产生一次模型调用，计入预算。
+            </div>
+          )}
           {!preview ? (
-            <Empty>填好配置后点“预览抓取”，这里显示将会采集到的条目（不入库）。</Empty>
+            form.kind === "ai_list"
+              ? <Empty>填好 url 和 prompt 后点“预览（一次模型调用）”，这里显示模型抽出的条目（不入库，但会计费）。</Empty>
+              : <Empty>填好配置后点“预览抓取”，这里显示将会采集到的条目（不入库）。</Empty>
           ) : preview.items.length ? (
             <ul className="space-y-3">
               {preview.items.map((i) => (
@@ -150,7 +167,7 @@ export default function NewSource() {
               ))}
             </ul>
           ) : (
-            <Empty>没有抓到条目。</Empty>
+            <Empty>{form.kind === "ai_list" ? "模型没有从页面里抽出条目。检查 prompt 是否说明了要抽哪一块，或放宽 maxItems。" : "没有抓到条目。"}</Empty>
           )}
         </Card>
       </div>

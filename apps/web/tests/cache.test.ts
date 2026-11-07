@@ -35,7 +35,7 @@ const api = fakeApi(async (url, res, req) => {
     return res.end("# Article");
   }
   if (url.pathname === "/api/site/items/long-lived") return { id: "long-lived", title: "t" };
-  if (url.pathname === "/api/site/contact") return { wechatQr: "/qr.png", feishuQr: "/qr.png" };
+  if (url.pathname === "/api/site/maker") return { makerAvatar: null };
   if (url.pathname === "/api/site/stories/merged") {
     res.statusCode = 308;
     return { mergedInto: "surviving-story" };

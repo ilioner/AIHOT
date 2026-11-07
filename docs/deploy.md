@@ -62,6 +62,51 @@ MCP 默认接受 `SITE_URL` 的主机以及 `localhost`、`127.0.0.1`、`[::1]`�
 
 ### 更新
 
+#### SkillHub 工具类型不再被网站栏目拦截（2026-11-07，本机定制）
+
+用户指出「AI帮你剪视频」漏推：它已标记为 `tool-collection`，但网站栏目为 `tip`，旧查询先筛栏目而将其排除。更新 API 和 worker 后，明确标记为 `tool-directory` 或 `tool-collection` 的内容不再受栏目限制；未标明类型的旧内容仍要求 `ai-tools`，政策维持原规则。
+
+公开、eligible 和排除教程的条件不变，不放开整个 `tip`，不修改网站分类，无新增迁移、环境变量或数据删除。升级后这类未推送内容会进入正常待推列表；自动推送开关仍由使用者决定。本次已对 482 条公开 eligible 内容和当时全部 912 条远端记录对账，仅新增这一条候选，其余旧候选均有匹配的标准地址。具体补推结果见 `docs/plans/2026-11-07-skillhub-tool-kind-scope.md`。
+
+#### SkillHub 漏推修复（2026-11-07，本机定制）
+
+更新 API 和 worker 后，后台待推计数不再被推送状态表的计数覆盖；无推送记录的新候选会出现在列表中，读取不写入状态。
+专题地址映射复用文章已有的 `identity_key`，保留用于区分内容的 hash 路由，普通网页锚点仍去掉；已知英文重复提示也能识别。
+没有数据库迁移，不删除数据，不改变推送范围和 `SKILLHUB_PUSH_ENABLED`。
+
+旧版可能把不同的 360 专题都推成主页地址，并将后续专题记为 `exists`。升级不会自动重推这些历史记录：
+先备份本地推送记录和远端详情，并检索远端是否已经存在完整专题地址（当前列表接口 `page` 从 0 开始，页大小参数为 `size`）。已存在则不再创建，也不覆盖其内容；只有确认远端缺失，才修正本次同步所创建条目的标准地址和 slug，回查确认远端保留专题身份后再定向补推误去重条目。
+本次实查四个专题原已存在于远端 463–466，并非漏推；916 是与 463 重复的历史记录，其地址修正被远端拒绝，未删除或覆盖。本次仅补推三个真正待推条目（968–970），范围内待推归零。
+不批量清空 `exists`，不覆盖其他远端条目；远端地址修正的回滚应使用备份字段。具体实施记录见 `docs/plans/2026-11-07-skillhub-push-repair.md`。
+
+#### 公众号采集改为多账号节奏池，新增 AI 工具推送到 skillhub（2026-11-07，本机定制）
+
+`modules/weread-mp` 的一轮检查不再把十几个请求背靠背打在一个账号上，也不会因为一个账号被限流就整轮失败：
+
+- 账号池给每个扫码进来的账号单独算节奏——两次请求之间至少 `WEREAD_REQUEST_INTERVAL_MS`（默认 2500 毫秒，带 ±30% 抖动）——和每小时预算 `WEREAD_HOURLY_BUDGET`（默认 90 次，滚动一小时窗口）。
+- 每次请求都挑当下最快能用的账号，同一个信源默认黏在一个账号上；只有被限流（-2014）、要求人机验证（-2041）或凭据失效时才把**同一个请求**换到下一个账号重试，最多试满账号池。触发限流的账号按指数冷却（-2014 从 5 分钟翻倍到 1 小时，-2041 从 30 分钟翻倍到 6 小时），成功一次清零。
+- 全池都在冷却或预算用完时，这轮检查记为 `skipped`（信源健康度、失败计数都不动），等下一个调度周期；`scheduleCollect` 给每条入队加 0–120 秒随机延迟，避免几十个信源同一分钟开抓。
+- 后台「微信读书采集 → 账号池」显示可用账号数、下一个可请求时间、本小时总请求/预算、每个账号的节奏与冷却等级。要分摊更多公众号就继续扫码加号，代码不用改。
+
+迁移 `0102`（`skillhub_pushes` 建表）、`0107`（`skillhub_tool_types` 分类缓存建表）与 `0103`–`0106`（`weread_accounts` 各加一列 `next_allowed_at`／`requests_hour`／`cooldown_level`／`hour_started_at`）都是可在线执行的加法变更，`npm run db:migrate` 后重启 API、worker 与 web 生效；回滚只需删掉这五列和这两张新表，既有采集数据不受影响。
+
+新模块 `modules/skillhub-push`（`@aihot/skillhub-push`，已在 `site/modules/` 三份清单、`site/package.json` 和 `Dockerfile` 里登记）把「AI 工具」与「政策」两个类别的公开条目推到 skillhub 后台（`POST /api/v1/admin/ai-tools`，改类型用 `PUT /api/v1/admin/ai-tools/{id}`）。首版目标是优设 AI 导航、AIbase、aixzd、aistore 几条目录源加政策栏目，实时数量以后台概览为准：
+
+- 后台新页面「AI 工具 / skillhub 推送」：先「测试连接」（按 `code` 读 `aitool.category`／`aitool.audience`／`aitool.feature` 三本字典，字典 ID 各环境不同，代码里不写死数字），再「推送全部待推送」；列表逐条显示状态、尝试次数、远端 ID、最近错误和模型判出的分类／受众／功能特点，失败条目可单条重试或「重试失败」。
+- 凭据在页面上只粘一次：整条 `curl`（浏览器「Copy as cURL」）、一段请求头、或者单独一段 Cookie 值都行，`POST /api/admin/skillhub/paste` 交给 `backend/paste.ts` 挖出 Cookie 与 XSRF（优先请求头 `X-XSRF-TOKEN`，否则取 Cookie 里的 `XSRF-TOKEN`），会话用 `SESSION_SECRET` 派生密钥加密后存 `settings` 的 `skillhub.push`，接口只回「认出了哪半、哪个域名」，不回值；「解析并保存」顺带读一次三本字典，连不通当场报错。也可以在 `.env` 里写 `SKILLHUB_COOKIE`／`SKILLHUB_XSRF_TOKEN`（页面里存的优先）。接口地址默认 `https://skillhub.aefree.com`，可用 `SKILLHUB_BASE_URL` 改。
+- 分类、受众、功能特点由模型判定：步骤 `skillhub-classify` 默认吃站点 default，也就是 `.env` 里的 `LLM_MODEL`（当前 `deepseek-v4.1-flash-1017`），页面「分类模型」显示的就是这个真实模型名；可以在「模型与评测」页单独换，或用 `SKILLHUB_CLASSIFY_MODEL` 指定；每批 10 条、温度 0，答案只接受字典里真实存在的 code，结果按文章缓存进 `skillhub_tool_types`（迁移 `0107`）。模型不可用、超时或给出字典里没有的 code 时，那几条退回关键词规则并把 `decided_by` 记成 `rules`，推送照常进行。政策类条目无论模型怎么说都归到 `policy-regulations`。
+- `SKILLHUB_PUSH_ENABLED=true` 时 worker **每天 9:00**（`SKILLHUB_PUSH_CRON` 可改，默认 `0 9 * * *`）扫一次新抓到的条目；关着也可以手动推。推过的条目（`sent`／`exists`）永不重推，`skipped` 不再重试，`failed` 只有在后台重试或 `--retry-failed` 时才会清零重试。单条推送失败只记状态、继续下一条：`slug`／`canonicalUrl` 已存在的 400 记为 `exists`（视同成功），其他 4xx 记 `invalid`，网络错误和 5xx 重试到 3 次为止，401/403 记为配置问题并整批停下、不消耗尝试次数。
+- 「用模型重分类型并更新远端」对已推成功且留有 `remote_id` 的条目按完整创建体发 `PUT`；更新失败只记 `last_error`、不把 `sent` 降级，`exists`（远端是别人的条目，没有 `remote_id`）永远不更新。
+- 命令行等价入口：`node --env-file-if-exists=.env modules/skillhub-push/scripts/push.ts`（默认 dry-run，只打印 payload，不联网不写库），加 `--all` 才真推，另有 `--limit N`、`--retry-failed`、`--classify`、`--reclassify`、`--update-existing`。推送状态表 `skillhub_pushes` 一条资料一行，重复执行不会重复创建。
+
+#### 后台去掉内容诊断／反馈／精选评测入口与两处设置项，新增优设导航信源和 AI 抽取列表（2026-11-06）
+
+后台移除五处：内容诊断的侧栏入口（`/admin/content` 页面与 `/api/admin/content*` 接口保留，只能直接用地址进入，供预筛复核）；反馈的后台页面与侧栏入口（公开 `/feedback` 页面、提交接口、`feedback_bans` 封禁与统计全部保留，后台只少了看单页）；精选评测（SelectBench）的页面、接口、后端实现与测试全部删除，`scripts/eval-selection.ts` 不再写库。设置页去掉「关于页二维码」与「通知目的地」两块：作者二维码上传接口与 `/contact/:file` 静态别名删除，`/api/site/contact` 改为 `/api/site/maker` 只返回作者头像，`site/site.ts` 的 `ContactCard`、`maker.wechat`、`maker.feishu`、`ADMIN.feedbackNote`、`ADMIN.banNote` 随之移除。飞书推送机制、`notify_targets`／`deliveries` 表与投递测试保留，但后台已无开关，只能由运维用 SQL 打开（`UPDATE notify_targets SET enabled = true WHERE …`）。
+
+迁移 `0097`／`0098` 是两条独立的 `DROP TABLE IF EXISTS`（先子表 `selectbench_results` 后父表 `selectbench_runs`，无 CASCADE）：**已释放的对比运行与逐条评测结果永久丢失，不可恢复**。发布前先备份数据库，然后按 `npm run db:migrate` 的顺序执行；回滚只能靠备份。重启 API、worker 与 web 后验证：后台侧栏不再有这三项、设置页只剩分类管理与付费请求上限、`/about` 无二维码区、公开 `/feedback` 仍可提交、`/api/site/maker` 返回 `{ makerAvatar }`。
+
+同一版本新增两个信源：`catalog-uisdc-nav`（优设 AI 导航，`kind = external`，目录直发＝默认 PASS，不调模型，2026-11-06 实测单页 20 个分类、288 条唯一资源）与新的信源类型 `ai_list`（后台「AI 抽取列表」：填链接与提示词，一次采集一次付费模型调用，按 `structure` 那一步的模型计费）。`sources.kind` 的数据库约束用 `0099`（DROP CONSTRAINT）→ `0100`（加回含 `ai_list` 的列表，NOT VALID）→ `0101`（VALIDATE）放宽，三条都可在线执行，先 `npm run db:migrate` 再启动新版本。旧库升级后两个信源都需要落库才开始采集：优设导航用 `node --env-file-if-exists=.env modules/source-catalogs/scripts/sync.ts --apply`（新建站点由 `industry/sources.json` 首次导入自动带上），`ai_list` 在后台「信源 → 新建」里选类型创建。采集开关、预算、精选与全文许可都不变；`ai_list` 只负责抽取列表，发布仍走正常预筛、评分和写作，不默认 PASS。
+
 #### 360 推荐专题改为目录直接公开（2026-11-06）
 
 仅 `industry/selection.ts` 的 `directorySources` 中指定的 `catalog-360-topics` 改为无模型目录发布。新采集与修订立即通过统一发布层公开源站标题、已有简介和原文链接，无简介也可读；旧模型 UNKNOWN／BLOCK、writer none、拦截标签不再阻止该来源。人工下架、摘要范围、来源参与模式与全文授权保留；不自动入精选或事件、不伪造评分与模型 PASS。其他来源的审核、预算和精选门槛不变。

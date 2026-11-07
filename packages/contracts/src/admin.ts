@@ -42,7 +42,7 @@ export interface AdminRerun {
 }
 
 /** Items waiting for the admin, shown on the navigation: the engine's, and the modules' under their own keys. */
-export type AdminNavCounts = Partial<Record<"feedback" | "sources" | "runs", number>> & Record<string, number | undefined>;
+export type AdminNavCounts = Partial<Record<"sources" | "runs", number>> & Record<string, number | undefined>;
 
 /** One manual change (audit_log), as a history list shows it. */
 export interface AdminAuditEntry {
@@ -152,6 +152,8 @@ export interface AdminSourcePreview {
   ms: number;
   count: number;
   items: Array<{ title: string; url: string; publishedAt: Timestamp | null; excerpt: string }>;
+  /** Set when producing this preview spent a paid model call (an ai_list extraction). */
+  paidModelCall?: boolean;
 }
 
 // Content and events
@@ -341,19 +343,6 @@ export interface AdminRuns {
 
 // Settings
 
-export interface AdminNotifyTarget {
-  key: string;
-  purpose: string;
-  kind: string;
-  enabled: boolean;
-  enabled_at: Timestamp | null;
-  config_ref: string | null;
-  note: string | null;
-  updated_at: Timestamp;
-  deliveries_7d: number;
-  last_sent_at: Timestamp | null;
-}
-
 export interface AdminBudget {
   service: string;
   per_minute: number;
@@ -367,8 +356,6 @@ export interface AdminBudget {
 
 
 export interface AdminSettings {
-  contact: { wechatQr: string | null; feishuQr: string | null };
-  targets: AdminNotifyTarget[];
   budgets: AdminBudget[];
   categories: CategoryDefinition[];
 }
@@ -397,36 +384,4 @@ export interface AdminModels {
   capabilities: Array<{ key: string; label: string; env: string; defaultModel: string; vision: boolean; current: { model: string; source: "admin" | "env" | "default" }; fallback: { model: string; primaryPaused: boolean; backupPaused: boolean; nextProbeAt: string | null } | null; usage: AdminModelUsage[] }>;
   choices: Array<{ key: string; service: string; vision: boolean; compatibleCapabilities: string[] }>;
   history: Array<{ at: Timestamp; actor: string; subject: string; reason: string | null; before: { model: string; source: string } | null; after: { model: string; source: string } | null }>;
-  benches: Array<{ id: string; label: string; sample_size: number; prompt_version: string | null; models: string[]; created_at: Timestamp }>;
-}
-
-export interface AdminSelectBenchRun {
-  id: string;
-  label: string;
-  split: string | null;
-  sample_size: number;
-  prompt_version: string | null;
-  models: string[];
-  summary: Record<string, Record<string, number>>;
-  created_at: Timestamp;
-}
-
-export interface AdminSelectBenchRuns {
-  runs: Array<AdminSelectBenchRun & { imported_by: string | null; cases: number }>;
-}
-
-export interface AdminSelectBenchDecision {
-  decision: "select" | "reject" | null;
-  score: number | null;
-  relevance: string | null;
-  category: string | null;
-  reason: string | null;
-  error: string | null;
-  receiptId: number | null;
-}
-
-export interface AdminSelectBenchCases {
-  run: AdminSelectBenchRun;
-  rows: Array<{ case_id: string; title: string; stratum: string | null; gold: "select" | "reject" | "either"; by_model: Record<string, AdminSelectBenchDecision> }>;
-  strata: Array<{ stratum: string | null; n: number }>;
 }

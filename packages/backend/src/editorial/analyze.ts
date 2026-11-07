@@ -265,7 +265,7 @@ async function runPrefilter(a: AnalyzeInputArticle, opts: StepOpts): Promise<Non
   return { label: res.data.label, reason: res.data.reason, model: res.model, receiptId: res.receiptId, reused: res.reused };
 }
 
-/** The production prefilter step, exposed separately so SelectBench can preserve partial receipt evidence. */
+/** The production prefilter step, exposed separately so the gold-set eval (scripts/eval-selection.ts) can keep partial receipt evidence. */
 export async function runSelectionPrefilter(
   a: AnalyzeInputArticle,
   opts: StepOpts = {},

@@ -1,9 +1,14 @@
-// The account pool: the WeRead logins an administrator scanned in, their tokens, cooldowns and the
-// request path every other module file uses. One account is normally enough; a second lets collection
-// continue while the first cools down after a platform throttle.
+// The account pool: the WeRead logins an administrator scanned in, their tokens, pacing and cooldowns,
+// and the request path every other module file uses. One account is normally enough; a second lets
+// collection continue while the first cools down after a platform throttle.
+import { setTimeout as sleep } from "node:timers/promises";
 import { sql } from "@aihot/backend/db";
 import { APP_HEADERS, ENDPOINTS, WEB_UA } from "./endpoints.ts";
 import { call, classify, errcodeOf, WereadError, type FailureKind } from "./http.ts";
+import {
+  chooseAccount, cooldownSeconds, hourWindowOf, pacingSettings, requestIntervalMs, summarizePool,
+  type BlockReason, type CoolingKind, type PacingSettings,
+} from "./pacing.ts";
 import { open, seal, SealedCredentialError } from "./secret.ts";
 import { genSignature } from "./signer.ts";
 
@@ -27,6 +32,10 @@ export interface AccountRow {
   last_used_at: Date | null;
   last_error: string | null;
   created_at: Date;
+  next_allowed_at: Date | null;
+  requests_hour: number;
+  hour_started_at: Date | null;
+  cooldown_level: number;
 }
 
 /** A usable login: the row's identity plus its tokens in the clear. */
@@ -49,6 +58,23 @@ export interface AccountView {
   lastUsedAt: string | null;
   lastError: string | null;
   createdAt: string;
+  nextAllowedAt: string | null;
+  requestsHour: number;
+  hourlyBudget: number;
+  cooldownLevel: number;
+}
+
+/** The pool's own state, next to the accounts it shows. */
+export interface PoolView {
+  total: number;
+  ready: number;
+  cooling: number;
+  reauth: number;
+  /** When a login may take the next request, if none may now. */
+  nextAt: string | null;
+  requestsThisHour: number;
+  hourlyBudget: number;
+  intervalMs: number;
 }
 
 const message = (error: unknown) => String(error instanceof Error ? error.message : error).slice(0, 300);
@@ -69,21 +95,53 @@ function headersOf(session: Session): Record<string, string> {
   };
 }
 
-export async function listAccounts(): Promise<AccountView[]> {
-  const rows = await sql<AccountRow[]>`
-    SELECT * FROM weread_accounts ORDER BY created_at`;
-  return rows.map((row) => ({
+function viewOf(row: AccountRow, settings: PacingSettings, now: Date): AccountView {
+  return {
     id: row.id,
     vid: row.vid,
     nickname: row.nickname,
     avatar: row.avatar,
-    status: row.status,
+    // A finished cooldown leaves the column as it was: the badge follows the clock, not the last write,
+    // so an account that cooled down last night does not look blocked this morning.
+    status: row.status === "cooling" && !(row.cooldown_until && row.cooldown_until.getTime() > now.getTime()) ? "active" : row.status,
     failCount: row.fail_count,
     cooldownUntil: row.cooldown_until?.toISOString() ?? null,
     lastUsedAt: row.last_used_at?.toISOString() ?? null,
     lastError: row.last_error,
     createdAt: row.created_at.toISOString(),
-  }));
+    nextAllowedAt: row.next_allowed_at?.toISOString() ?? null,
+    requestsHour: row.requests_hour,
+    hourlyBudget: settings.hourlyBudget,
+    cooldownLevel: row.cooldown_level,
+  };
+}
+
+export async function listAccounts(): Promise<AccountView[]> {
+  const rows = await sql<AccountRow[]>`SELECT * FROM weread_accounts ORDER BY created_at`;
+  const settings = pacingSettings();
+  const now = new Date();
+  return rows.map((row) => viewOf(row, settings, now));
+}
+
+/** The accounts plus the pool's headline: how many may go now and when the next one may. */
+export async function accountPool(): Promise<{ accounts: AccountView[]; pool: PoolView }> {
+  const settings = pacingSettings();
+  const rows = await sql<AccountRow[]>`SELECT * FROM weread_accounts ORDER BY created_at`;
+  const now = new Date();
+  const snapshot = summarizePool(rows, now, settings);
+  return {
+    accounts: rows.map((row) => viewOf(row, settings, now)),
+    pool: {
+      total: snapshot.total,
+      ready: snapshot.ready,
+      cooling: snapshot.cooling,
+      reauth: snapshot.reauth,
+      nextAt: snapshot.nextAt?.toISOString() ?? null,
+      requestsThisHour: snapshot.requestsThisHour,
+      hourlyBudget: settings.hourlyBudget,
+      intervalMs: settings.intervalMs,
+    },
+  };
 }
 
 export interface NewAccount {
@@ -99,7 +157,7 @@ export interface NewAccount {
   userAgent: string;
 }
 
-/** Stores a freshly scanned login, or replaces the same WeRead user's earlier tokens. */
+/** Stores a freshly scanned login, or replaces the same WeRead user's earlier tokens and pacing state. */
 export async function saveAccount(account: NewAccount): Promise<void> {
   await sql`
     INSERT INTO weread_accounts (vid, nickname, avatar, access_token, refresh_token, skey, device_id, device_name, install_id, user_agent)
@@ -110,6 +168,7 @@ export async function saveAccount(account: NewAccount): Promise<void> {
       access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token, skey = EXCLUDED.skey,
       device_id = EXCLUDED.device_id, device_name = EXCLUDED.device_name, install_id = EXCLUDED.install_id,
       user_agent = EXCLUDED.user_agent, status = 'active', fail_count = 0, cooldown_until = NULL,
+      cooldown_level = 0, next_allowed_at = NULL, requests_hour = 0, hour_started_at = NULL,
       last_error = NULL, updated_at = now()`;
 }
 
@@ -139,32 +198,126 @@ function sessionOf(row: AccountRow): Session {
   }
 }
 
-/** The next account that may be used now, or null when every login is cooling or needs a new scan. */
-export async function borrowAccount(): Promise<Session | null> {
-  await sql`UPDATE weread_accounts SET status = 'active', cooldown_until = NULL, updated_at = now()
-            WHERE status = 'cooling' AND cooldown_until IS NOT NULL AND cooldown_until <= now()`;
-  const [row] = await sql<AccountRow[]>`
-    UPDATE weread_accounts SET last_used_at = now(), updated_at = now()
-    WHERE id = (
-      SELECT id FROM weread_accounts WHERE status = 'active'
-      ORDER BY last_used_at NULLS FIRST, id LIMIT 1
-    ) RETURNING *`;
-  if (!row) return null;
+/**
+ * What the pool can give one request: a login with the wait it needs first, a wait that belongs to the
+ * next scheduling cycle, or no login at all.
+ */
+type Reservation =
+  | { kind: "ready"; session: Session; waitMs: number; poolSize: number }
+  | { kind: "waiting"; reason: Exclude<BlockReason, "ready">; waitMs: number; poolSize: number }
+  | { kind: "empty" };
+
+/**
+ * Picks this request's login and counts the request against its hour budget before it goes out, so two
+ * collectors cannot spend the same slot. The row locks are held while choosing, not while waiting.
+ */
+async function reserve(preferredId: number | null = null, exclude: ReadonlySet<number> = new Set()): Promise<Reservation> {
+  const settings = pacingSettings();
+  const now = new Date();
+  const reserved = await sql.begin(async (tx) => {
+    const rows = await tx<AccountRow[]>`SELECT * FROM weread_accounts ORDER BY id FOR UPDATE`;
+    const poolSize = rows.filter((row) => row.status !== "reauth" && !exclude.has(row.id)).length;
+    const choice = chooseAccount(rows, now, settings, { preferredId, exclude });
+    if (!choice.account) return { kind: "empty" as const };
+    if (choice.reason !== "ready" && choice.reason !== "interval") {
+      return { kind: "waiting" as const, reason: choice.reason, waitMs: choice.waitMs, poolSize };
+    }
+    const window = hourWindowOf(choice.account, now);
+    // next_allowed_at covers the wait this request takes before it goes out, so the rest is measured
+    // from when the request is actually made rather than from when it was picked.
+    const interval = requestIntervalMs(settings);
+    const [row] = await tx<AccountRow[]>`
+      UPDATE weread_accounts SET
+        last_used_at = now(), requests_hour = ${window.used + 1}, hour_started_at = ${window.startedAt},
+        status = CASE WHEN status = 'cooling' THEN 'active' ELSE status END,
+        cooldown_until = CASE WHEN cooldown_until IS NOT NULL AND cooldown_until <= now() THEN NULL ELSE cooldown_until END,
+        next_allowed_at = now() + make_interval(secs => ${(choice.waitMs + interval) / 1000}),
+        updated_at = now()
+      WHERE id = ${choice.account.id}
+      RETURNING *`;
+    return { kind: "ready" as const, row: row!, waitMs: choice.waitMs, poolSize };
+  });
+  if (reserved.kind !== "ready") return reserved;
   try {
-    return sessionOf(row);
+    return { kind: "ready", session: sessionOf(reserved.row), waitMs: reserved.waitMs, poolSize: reserved.poolSize };
   } catch (error) {
-    await markReauth(row.id, message(error));
+    await markReauth(reserved.row.id, message(error));
     throw error;
   }
 }
 
-export async function markSuccess(id: number): Promise<void> {
-  await sql`UPDATE weread_accounts SET fail_count = 0, last_error = NULL, updated_at = now() WHERE id = ${id}`;
+/** The pool has nothing to give this cycle: cooling, out of hour budget, or every login needs a scan. */
+function poolCoolingError(reason: Exclude<BlockReason, "ready">, waitMs: number): WereadError {
+  const why = reason === "budget" ? "本小时请求预算已用完" : "账号都在冷却";
+  const wait = waitMs >= 60_000 ? `约 ${Math.max(1, Math.round(waitMs / 60_000))} 分钟后` : "稍后";
+  return new WereadError(`账号池冷却中（${why}，${wait}可再请求）；这次检查跳过，等下一个调度周期`, "throttled");
 }
 
-/** A temporary platform refusal: this login is not used again until the cooldown ends. */
-export async function cool(id: number, seconds: number, error: string): Promise<void> {
-  await sql`UPDATE weread_accounts SET status = 'cooling', cooldown_until = now() + make_interval(secs => ${seconds}),
+/**
+ * The login one call may use now, after waiting out an ordinary pacing gap. Throws when the pool has
+ * nothing usable, so a caller never sends a request into a cooldown.
+ */
+export async function borrowAccount(preferredId: number | null = null): Promise<Session> {
+  const outcome = await reserve(preferredId);
+  if (outcome.kind === "empty") throw new WereadError("账号池中没有可用的微信读书账号，请先在后台扫码登录", "auth");
+  if (outcome.kind === "waiting") throw poolCoolingError(outcome.reason, outcome.waitMs);
+  await sleep(outcome.waitMs);
+  return outcome.session;
+}
+
+/** One source's request path: every WeRead request picks a login, waits its pacing gap, and moves on. */
+export type PooledCaller = <T>(fn: (session: Session) => Promise<T>) => Promise<T>;
+
+/**
+ * The pool's request path for one collection check. Each request takes the soonest login with budget,
+ * waits only its ordinary pacing rest (a cooldown or an exhausted hour budget ends the check instead of
+ * stretching it), and when the platform throttles, demands verification or rejects the tokens, the same
+ * request moves to the next login — at most once per login in the pool.
+ */
+export function pooledCaller(): PooledCaller {
+  // Sticky: while one login keeps answering, the rest of this check reuses the session it activated.
+  let preferredId: number | null = null;
+  const failed = new Set<number>();
+  return async <T>(fn: (session: Session) => Promise<T>): Promise<T> => {
+    let lastError: WereadError | null = null;
+    for (;;) {
+      const outcome = await reserve(preferredId, failed);
+      if (outcome.kind === "empty") throw lastError ?? new WereadError("账号池中没有可用的微信读书账号，请先在后台扫码登录", "auth");
+      if (outcome.kind === "waiting") throw lastError ?? poolCoolingError(outcome.reason, outcome.waitMs);
+      await sleep(outcome.waitMs);
+      try {
+        const result = await fn(outcome.session);
+        preferredId = outcome.session.id;
+        return result;
+      } catch (error) {
+        if (!(error instanceof WereadError)) throw error;
+        // Other failures (a bad path, a 500) would fail on every login just the same: report them as is.
+        if (error.kind !== "throttled" && error.kind !== "verify" && error.kind !== "auth") throw error;
+        failed.add(outcome.session.id);
+        preferredId = null;
+        lastError = error;
+        if (failed.size >= outcome.poolSize) {
+          throw new WereadError(`账号池冷却中（${error.message}）；这次检查跳过，等下一个调度周期`, "throttled");
+        }
+      }
+    }
+  };
+}
+
+export async function markSuccess(id: number): Promise<void> {
+  await sql`UPDATE weread_accounts SET fail_count = 0, cooldown_level = 0, last_error = NULL, updated_at = now() WHERE id = ${id}`;
+}
+
+/**
+ * A temporary platform refusal: this login is not used again until its cooldown ends, and each
+ * consecutive refusal doubles that cooldown (`cooldown_level`) up to what the kind allows.
+ */
+export async function cool(id: number, kind: CoolingKind, error: string): Promise<void> {
+  const [row] = await sql<{ cooldown_level: number }[]>`SELECT cooldown_level FROM weread_accounts WHERE id = ${id}`;
+  const level = Math.max(0, row?.cooldown_level ?? 0) + 1;
+  const seconds = cooldownSeconds(kind, level);
+  await sql`UPDATE weread_accounts SET status = 'cooling', cooldown_level = ${level},
+              cooldown_until = now() + make_interval(secs => ${seconds}),
               fail_count = fail_count + 1, last_error = ${error}, updated_at = now() WHERE id = ${id}`;
 }
 
@@ -189,6 +342,7 @@ export async function refreshAccount(row: AccountRow): Promise<Session | null> {
   const now = Date.now();
   const random = Math.floor(Math.random() * 1000);
   // A network failure says nothing about the tokens: it propagates and the account stays as it is.
+  await paceRequest(row.id);
   const answer = await call(`${ENDPOINTS.api}/login`, {
     method: "POST",
     headers: APP_HEADERS,
@@ -214,7 +368,7 @@ export async function refreshAccount(row: AccountRow): Promise<Session | null> {
   if (answer.status !== 200 || !accessToken) {
     const kind: FailureKind = classify(answer);
     const error = `刷新登录凭据失败：HTTP ${answer.status}${errcodeOf(json, answer.text) === null ? "" : ` (${errcodeOf(json, answer.text)})`}`;
-    if (kind === "throttled") await cool(row.id, 300, error);
+    if (kind === "throttled") await cool(row.id, "throttled", error);
     else await markReauth(row.id, error);
     return null;
   }
@@ -226,9 +380,30 @@ export async function refreshAccount(row: AccountRow): Promise<Session | null> {
 }
 
 /** Reports a mobile session as online; the API refuses some listing calls until this has happened once. */
+/**
+ * Counts one request a login makes outside the pooled path (session activation, a token refresh) against
+ * its hour budget, and waits the ordinary rest first: these calls reuse the session already in hand
+ * instead of picking one, so without this they would land back to back on the same login.
+ */
+async function paceRequest(id: number): Promise<void> {
+  const interval = requestIntervalMs(pacingSettings());
+  await sql`
+    UPDATE weread_accounts SET
+      last_used_at = now(),
+      requests_hour = CASE WHEN hour_started_at IS NULL OR hour_started_at <= now() - interval '1 hour'
+        THEN 1 ELSE requests_hour + 1 END,
+      hour_started_at = CASE WHEN hour_started_at IS NULL OR hour_started_at <= now() - interval '1 hour'
+        THEN now() ELSE hour_started_at END,
+      next_allowed_at = now() + make_interval(secs => ${interval / 1000}),
+      updated_at = now()
+    WHERE id = ${id}`;
+  await sleep(interval);
+}
+
 export async function activateSession(session: Session): Promise<void> {
   const headers = { ...headersOf(session), "user-agent": WEB_UA };
   try {
+    await paceRequest(session.id);
     await call(`${ENDPOINTS.api}/mobileSync`, {
       method: "POST",
       headers,
@@ -245,7 +420,9 @@ export async function activateSession(session: Session): Promise<void> {
     // Best effort: the listing call that follows reports what still does not work.
     return;
   }
+  await paceRequest(session.id);
   await call(`${ENDPOINTS.api}/shelf/sync?synckey=0`, { headers, timeoutMs: 10_000 }).catch(() => undefined);
+  await paceRequest(session.id);
   await call(`${ENDPOINTS.api}/mp/list?listType=0&count=50&synckey=0`, { headers, timeoutMs: 10_000 }).catch(() => undefined);
 }
 
@@ -261,7 +438,7 @@ export interface ApiOptions {
 /**
  * ONE account's API call, with the recovery the mobile app performs: a 401 quietly refreshes the
  * tokens and retries once; -2041 activates the mobile session and retries once; -2014 cools the login
- * down for five minutes and asks the caller to try again later.
+ * down and asks the pool's caller to try another account.
  */
 export async function callApi(session: Session, path: string, opts: ApiOptions = {}): Promise<Record<string, unknown>> {
   let current = session;
@@ -300,13 +477,13 @@ export async function callApi(session: Session, path: string, opts: ApiOptions =
       continue;
     }
     if (kind === "verify") {
-      const text = "微信读书要求人机验证（-2041），这个账号暂停 30 分钟；仍失败请重新扫码";
-      await cool(current.id, 1800, text);
+      const text = "微信读书要求人机验证（-2041），这个账号已暂停，稍后自动重试；仍失败请重新扫码";
+      await cool(current.id, "verify", text);
       throw new WereadError(text, "verify", answer.status, errcode);
     }
     if (kind === "throttled") {
-      const text = "微信读书限流（-2014），这个账号暂停 5 分钟";
-      await cool(current.id, 300, text);
+      const text = "微信读书限流（-2014），这个账号已暂停，稍后自动重试";
+      await cool(current.id, "throttled", text);
       throw new WereadError(text, "throttled", answer.status, errcode);
     }
     throw new WereadError(failure, "other", answer.status, errcode);
@@ -325,9 +502,7 @@ export async function activateAccount(vid: string): Promise<void> {
   }
 }
 
-/** Runs a call on the next usable account, or reports that none is available. */
+/** Runs one call on the next usable account. */
 export async function withAccount<T>(fn: (session: Session) => Promise<T>): Promise<T> {
-  const session = await borrowAccount();
-  if (!session) throw new WereadError("账号池中没有可用的微信读书账号，请先在后台扫码登录", "auth");
-  return fn(session);
+  return fn(await borrowAccount());
 }
