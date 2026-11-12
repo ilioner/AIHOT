@@ -151,11 +151,11 @@ export function parseCatalog(id: CatalogId, payload: string): CatalogItem[] {
         const title = text(item.title);
         const originalUrl = link(item.url);
         const fulltextUrl = link(typeof item.content === "string" ? /\[\[全文:(https?:\/\/[^\]]+)\]\]/.exec(item.content)?.[1] : null);
-        return entry({ title, summary: item.content, url: originalUrl ?? "https://www.uisdc.com/news",
+        return entry({ title, summary: item.content, url: originalUrl ?? fulltextUrl ?? "https://www.uisdc.com/news",
           images: typeof item.images === "string" ? item.images.split("|") : [], tags: [item.tag],
           identityKey: `uisdc:${pack.id}:${sha256(originalUrl ?? title).slice(0, 32)}`, publishedAt: new Date(Number(pack.time) * 1000),
           raw: { externalId: `${pack.id}:${sha256(originalUrl ?? title).slice(0, 32)}`, dailyPackId: pack.id, sourceTag: text(item.tag),
-            catalogUrl: "https://www.uisdc.com/news", originalUrl: originalUrl ?? fulltextUrl, independentUrl: !!originalUrl, contentKind: "news", timePrecision: "daily-pack" } });
+            catalogUrl: "https://www.uisdc.com/news", originalUrl: originalUrl ?? fulltextUrl, independentUrl: !!(originalUrl ?? fulltextUrl), contentKind: "news", timePrecision: "daily-pack" } });
       });
     });
   }

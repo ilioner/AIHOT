@@ -57,6 +57,10 @@
 退回规则的结论也会缓存（`decided_by = 'rules'`），所以同一批里不会为同一条反复调用模型；
 要重新问一次就用后台的「用模型重新分类」或命令行的 `--reclassify`（`force` 忽略缓存）。
 
+`skillhub_push_events`（迁移 `0108`–`0111`）保存不可改写的操作记录：条目 ID、操作 `create` / `update` / `legacy`、操作时间及当时的标题、结果、远端 ID、分类和错误。它与最新状态在同一事务写入，重推不覆盖历史。
+
+升级前没有完整尝试日志，只能按已有 `pushed_at` 展示最后一次已知接受记录，标为「旧记录」。第一次再次操作前保存该记录，不伪造更早的尝试次数、错误或历史分类；迁移不做全表回填。日期筛选中的失败是该次操作失败，即使最新状态仍是待重试或已推送。
+
 ## 分类：模型决定，规则兜底（`backend/classify.ts`）
 
 - 模型步骤名 `skillhub-classify`（`server.ts` 的 `models` 声明，后台「模型与评测」页可换），默认跟随站点的 `default` 模型，
@@ -105,16 +109,25 @@
 | --- | --- |
 | 2xx | 新建记 `sent` 并记下 `remote_id`；更新记 `updated`，行状态不变 |
 | 400 且提示「已存在 / 重复」或已知英文 `slug / canonical URL already exists` | 新建记 `exists`；更新记一次失败，行仍是 `sent` |
-| 401 / 403 | 会话失效：新建记为 `pending` + 错误原因，**立即停止本批次**；更新**不改本地任何状态**，同样停止 |
+| 401 / 403 | 会话失效：新建记为 `pending` + 错误原因，**立即停止本批次**；更新保留本地最新推送状态、另记失败操作历史，同样停止 |
 | 其他 4xx | `pending`，记 `last_error`，重试到 3 次后 `failed`；更新只记 `last_error`，行仍是 `sent` |
 | 429 / 5xx / 网络错误 | 同上；但连续 3 条都失败就停下本批次（`summary.error` 写明原因），剩下的留给下一轮，避免对端挂了还逐条等超时 |
 
 ## 只推一次，失败才会重来
 
-- `sent` / `exists` 的条目**永不重推**（`pendingToolRows` 只取没有状态行、或 `pending` 且 `attempts < 3` 的）。
+- `sent` / `exists` 的条目**不自动重推**（`pendingToolRows` 默认只取没有状态行、或 `pending` 且 `attempts < 3` 的）；管理员明确选择「重新创建」可再次 POST。
 - `skipped` 不重试：映射阶段就不合格的条目，重试也是同样的结果。
 - `failed` 只在后台点「重试失败」或单条「重试」时清零重开（命令行 `--retry-failed`）。
 - 每天一次的扫描只看「有没有新的待推送条目」，有就排一批（`batchSize` 50），没有就什么都不做。
+
+## 按日查看与批量重新创建
+
+- 日期按北京时间 UTC+08 的 00:00（含）至次日 00:00（不含）筛选**操作历史**，不是文章发布日期；创建成功、已存在、失败、跳过和更新都可查。同一工具多次推送会有多条记录。
+- 不选日期时展示每条工具的最新状态，包括从未推送的候选。默认每页 20 条，可选 50 / 100，服务端返回总数；切换日期、页码或执行操作清空勾选。
+- 勾选当前页的多条记录后「重新创建已选工具」，同一工具去重后只提交一次；已下架或不符合当前范围的历史记录不可重推。
+- 「重新创建全部当前候选」覆盖全部页与全部日期，不受历史已推送标记限制；按每批最多 500 条拆队列，不截断超过 500 条的候选。入队和 worker 执行时都检查公开资格。
+- 两个操作都需确认，复用已有分类、重开本轮尝试预算，只调用 POST 创建，不使用 PUT、不删除远端内容。远端已删除的记录重新创建，仍存在的记录按接口去重结果记 `exists`。接口返回的是入队数和目标数，不是成功数；执行结果看记录和任务输出。
+- 网络或会话错误沿用单批停止规则；未完成条目不会伪报成功，修复连接后可按最新状态重试。
 
 ## 更新已推送的条目
 
@@ -144,11 +157,13 @@
 （每行显示模型判定的三个 code 和判定者）。
 
 待推送数包含尚无 `skillhub_pushes` 记录的新候选。列表也展示这些条目（`pending`、尝试 0 次），
-读取概览不会为它们创建推送状态；历史状态统计不会覆盖实际候选的待推数量。
+读取概览不会为它们创建推送状态；历史状态统计不会覆盖实际候选的待推数量。「已分类 / 工具总数」、模型／规则分类数和未分类数使用同一份当前公开候选查询；下架、规则不合格、教程等范围外缓存保留，但不计入分子，避免出现 412 / 411。
 
 | 路由 | 作用 |
 | --- | --- |
-| `GET /api/admin/skillhub/overview` | 概览、状态计数、已分类/未分类条数、当前分类模型、最多 200 条记录（优先失败、待推，含从未推送的候选和每条的 `types`）、凭据是否已配置 |
+| `GET /api/admin/skillhub/overview` | 概览、状态计数、已分类/未分类条数、当前分类模型、凭据是否已配置；不再夹带列表 |
+| `GET /api/admin/skillhub/items?page=1&pageSize=20&date=YYYY-MM-DD` | 日期可省略；返回 `{rows, page, pageSize, total}`，每页 1–100 条；不选日期为最新状态，选日期为北京时间操作历史 |
+| `POST /api/admin/skillhub/repush` | `{articleIds: [...]}`（1–500 个）或 `{all: true}`，两者互斥；去重并过滤当前资格，返回 `{enqueued, pending}`，worker 用 POST 重新创建 |
 | `POST /api/admin/skillhub/run` | 把待推送条目排进队列（不等推送完成）：`{limit?, onlyFailed?, articleIds?, updateExisting?, reclassify?}` |
 | `POST /api/admin/skillhub/classify` | 立刻跑一遍分类：`{limit?, articleIds?, onlyMissing?}`，返回 `{attempted, byModel, byRules, model}` |
 | `POST /api/admin/skillhub/paste` | 页面唯一入口：粘 curl / 请求头 / Cookie 整段，服务端解析出 Cookie 与 XSRF 后 sealed 保存（`{paste, test?}`；`test` 顺带读一次字典） |
@@ -161,7 +176,7 @@
 `backend/paste.ts` 负责从里面挖出 Cookie 与 XSRF（优先请求头 `X-XSRF-TOKEN`，没有就从 Cookie 的 `XSRF-TOKEN` 取），
 解析结果只回「认出了哪半、请求去的哪个域名」，不回值本身；「解析并保存」会顺带读一次三本字典，连不通当场报错。
 
-保存凭据、手动推送、模型分类、整体更新都会写一条 `audit_log`（`skillhub.config` / `skillhub.push` / `skillhub.classify` / `skillhub.update`），
+保存凭据、手动推送、批量重新创建、模型分类、整体更新都会写一条 `audit_log`（`skillhub.config` / `skillhub.push` / `skillhub.repush` / `skillhub.classify` / `skillhub.update`），
 记的是谁、什么时候、多少条、用了哪个模型；凭据值本身不进审计，也不进任何接口响应。
 
 ## 队列与定时

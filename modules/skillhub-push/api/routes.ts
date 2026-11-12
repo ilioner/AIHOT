@@ -6,10 +6,10 @@ import { adminHandler, type AdminHandler } from "@aihot/api/routes/admin-auth";
 import { actorOf } from "@aihot/backend/admin/auth";
 import { audit } from "@aihot/backend/audit";
 import { baseUrl, clearDictionaryCache, openSkillhub } from "../backend/client.ts";
-import { classificationRunning, currentModel, typeCounts } from "../backend/classify.ts";
+import { classificationRunning, currentModel } from "../backend/classify.ts";
 import { configuration, saveCredentials } from "../backend/credentials.ts";
 import { parseSession } from "../backend/paste.ts";
-import { classifyOnly, enqueueArticles, enqueueOne, enqueuePending, enqueueUpdate, overviewCounts, pushEnabled, pushStatusCounts, recentPushes, resetFailed, resetOne } from "../backend/push.ts";
+import { classifyOnly, enqueueArticles, enqueueOne, enqueuePending, enqueueRepush, enqueueUpdate, listPushes, overviewCounts, pushEnabled, pushStatusCounts, resetFailed, resetOne } from "../backend/push.ts";
 
 const handler = (fn: AdminHandler) => adminHandler(fn);
 
@@ -34,15 +34,22 @@ const PasteBody = z.object({
   test: z.boolean().optional(),
 });
 const ArticleParams = z.object({ articleId: z.string().trim().min(1).max(80) });
+const ItemsQuery = z.object({
+  page: z.coerce.number().int().min(1).max(1_000_000).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  date: z.iso.date().optional(),
+});
+const RepushBody = z.union([
+  z.object({ all: z.literal(true) }).strict(),
+  z.object({ articleIds: z.array(z.string().trim().min(1).max(80)).min(1).max(500) }).strict(),
+]);
 
 export function registerSkillhubRoutes(app: FastifyInstance): void {
   app.get("/api/admin/skillhub/overview", handler(async () => {
-    const [counts, statuses, rows, configured, classified, model] = await Promise.all([
+    const [counts, statuses, configured, model] = await Promise.all([
       overviewCounts(),
       pushStatusCounts(),
-      recentPushes(),
       configuration(),
-      typeCounts(),
       currentModel(),
     ]);
     return {
@@ -54,16 +61,21 @@ export function registerSkillhubRoutes(app: FastifyInstance): void {
       counts: {
         ...statuses,
         ...counts,
-        classified: classified.classified,
-        byModel: classified.byModel,
-        byRules: classified.byRules,
-        unclassified: Math.max(0, counts.candidates - classified.classified),
+        unclassified: counts.candidates - counts.classified,
         // True while a classification batch is running in this process (the page shows 分类中…).
         classifying: classificationRunning(),
       },
       model,
-      rows,
     };
+  }));
+
+  app.get("/api/admin/skillhub/items", handler(async req => listPushes(ItemsQuery.parse(req.query))));
+
+  app.post("/api/admin/skillhub/repush", handler(async (req, _reply, admin) => {
+    const scope = RepushBody.parse(req.body);
+    const queued = await enqueueRepush(scope);
+    await audit(actorOf(admin), "skillhub.repush", "skillhub-push", null, null, { ...scope, ...queued });
+    return queued;
   }));
 
   // Queued rather than run inside the request: 300+ tools are minutes of calls, and the worker owns
@@ -82,9 +94,10 @@ export function registerSkillhubRoutes(app: FastifyInstance): void {
       });
       return { ...queued, mode: "update" as const };
     }
+    const reset = body.onlyFailed ? await resetFailed() : 0;
     const queued = body.articleIds?.length
       ? { ...(await enqueueArticles(body.articleIds)), limit: body.limit ?? null }
-      : { ...(await enqueuePending(body.limit)), reset: body.onlyFailed ? await resetFailed() : 0, limit: body.limit ?? null };
+      : { ...(await enqueuePending(body.limit)), reset, limit: body.limit ?? null };
     // A manual push spends the site's outbound identity: the audit trail says who asked for it.
     await audit(actorOf(admin), "skillhub.push", "skillhub-push", null, null, {
       enqueued: queued.enqueued,

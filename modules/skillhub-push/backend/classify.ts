@@ -231,20 +231,6 @@ export function classificationRunning(): boolean {
   return inFlight > 0;
 }
 
-/** How many articles have codes stored, and who decided them (the admin overview). */
-export async function typeCounts(): Promise<{ classified: number; byModel: number; byRules: number }> {
-  try {
-    const [row] = await sql<{ classified: number; by_model: number; by_rules: number }[]>`
-      SELECT count(*)::int AS classified,
-        count(*) FILTER (WHERE decided_by = 'model')::int AS by_model,
-        count(*) FILTER (WHERE decided_by <> 'model')::int AS by_rules
-      FROM skillhub_tool_types`;
-    return { classified: row?.classified ?? 0, byModel: row?.by_model ?? 0, byRules: row?.by_rules ?? 0 };
-  } catch {
-    return { classified: 0, byModel: 0, byRules: 0 };
-  }
-}
-
 /** `default` is the deployment's own model (`LLM_MODEL` in .env); show that name, not the alias. */
 export function concreteModel(key: string): string {
   return MODELS[key]?.model || key;

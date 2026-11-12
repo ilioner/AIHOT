@@ -3,10 +3,13 @@
 // failed. The queue and the daily sweep look for what is still pending; the admin page may push at any
 // time, and may re-send an already pushed tool in full (PUT) after the model re-classified it.
 // Nothing here reaches another module or the public site.
+import { randomUUID } from "node:crypto";
+import { addDays, beijingMidnight } from "@aihot/contracts/time";
 import { sql } from "@aihot/backend/db";
+import { appendEvent, legacySnapshot, preserveLegacy, pushSnapshot, snapshotFrom, unrecordedLegacy } from "./history.ts";
 import { enqueueOn } from "@aihot/backend/jobs/queue";
 import { defineQueue } from "@aihot/backend/modules";
-import { currentModel, ensureTypes, typeCounts } from "./classify.ts";
+import { currentModel, ensureTypes } from "./classify.ts";
 import { openSkillhub, type PushResult, type Skillhub, type Transport } from "./client.ts";
 import { mapTool, toolPayload, type MappedTool, type ToolRow, type ToolTypes } from "./mapping.ts";
 
@@ -158,13 +161,22 @@ export async function sentToolRows(options: { limit?: number; articleIds?: strin
 }
 
 /** How many published tools there are and how many still need a push. */
-export async function overviewCounts(): Promise<{ candidates: number; pending: number; sent: number }> {
-  const [candidates] = await sql<{ n: number }[]>`SELECT count(*)::int AS n ${fromTools()} WHERE ${publishedTools()}`;
-  const [pending] = await sql<{ n: number }[]>`SELECT count(*)::int AS n ${fromTools()}
-    LEFT JOIN skillhub_pushes sp ON sp.article_id = a.id WHERE ${publishedTools()} AND ${NOT_PUSHED_YET()}`;
-  const [sent] = await sql<{ n: number }[]>`SELECT count(*)::int AS n ${fromTools()}
-    JOIN skillhub_pushes sp ON sp.article_id = a.id WHERE ${publishedTools()} AND sp.status = 'sent' AND sp.remote_id IS NOT NULL`;
-  return { candidates: candidates?.n ?? 0, pending: pending?.n ?? 0, sent: sent?.n ?? 0 };
+export async function overviewCounts(): Promise<{
+  candidates: number; pending: number; sent: number; classified: number; byModel: number; byRules: number;
+}> {
+  // The numerator and denominator share both scope and snapshot; historical cached types stay stored.
+  const [row] = await sql<{
+    candidates: number; pending: number; sent: number; classified: number; by_model: number; by_rules: number;
+  }[]>`SELECT count(*)::int AS candidates,
+      count(*) FILTER (WHERE ${NOT_PUSHED_YET()})::int AS pending,
+      count(*) FILTER (WHERE sp.status = 'sent' AND sp.remote_id IS NOT NULL)::int AS sent,
+      count(t.article_id)::int AS classified,
+      count(*) FILTER (WHERE t.decided_by = 'model')::int AS by_model,
+      count(*) FILTER (WHERE t.decided_by <> 'model')::int AS by_rules
+    ${fromTools()} LEFT JOIN skillhub_pushes sp ON sp.article_id = a.id
+    LEFT JOIN skillhub_tool_types t ON t.article_id = a.id WHERE ${publishedTools()}`;
+  return { candidates: row!.candidates, pending: row!.pending, sent: row!.sent,
+    classified: row!.classified, byModel: row!.by_model, byRules: row!.by_rules };
 }
 
 export async function pushStatusCounts(): Promise<Record<PushStatus, number>> {
@@ -186,41 +198,42 @@ export interface PushRowView {
   updatedAt: string;
   /** The codes the model (or the rules) chose, when the article has been classified yet. */
   types: (ToolTypes & { model: string | null }) | null;
+  canRepush: boolean;
+  eventId?: number;
+  operation?: "create" | "update" | "legacy";
 }
 
-export async function recentPushes(limit = 200): Promise<PushRowView[]> {
-  const rows = await sql<{
-    article_id: string; title: string | null; status: PushStatus; attempts: number;
-    remote_id: number | null; last_error: string | null; pushed_at: Date | null; updated_at: Date;
-    category_code: string | null; audience_code: string | null; feature_code: string | null;
-    decided_by: string | null; model: string | null;
-  }[]>`SELECT a.id AS article_id, p.title, coalesce(sp.status, 'pending') AS status, coalesce(sp.attempts, 0) AS attempts,
-      sp.remote_id, sp.last_error, sp.pushed_at, coalesce(sp.updated_at, a.discovered_at) AS updated_at,
-      t.category_code, t.audience_code, t.feature_code, t.decided_by, t.model
-    FROM articles a LEFT JOIN publications p ON p.article_id = a.id
-    LEFT JOIN skillhub_pushes sp ON sp.article_id = a.id
-    LEFT JOIN skillhub_tool_types t ON t.article_id = a.id
-    WHERE sp.article_id IS NOT NULL OR (${publishedTools()})
-    ORDER BY CASE coalesce(sp.status, 'pending') WHEN 'failed' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
-      coalesce(sp.updated_at, a.discovered_at) DESC, a.id
-    LIMIT ${clamp(limit, 200)}`;
-  return rows.map((row) => ({
-    articleId: row.article_id,
-    title: row.title ?? row.article_id,
-    status: row.status,
-    attempts: row.attempts,
-    remoteId: row.remote_id === null ? null : Number(row.remote_id),
-    lastError: row.last_error,
-    pushedAt: row.pushed_at?.toISOString() ?? null,
-    updatedAt: row.updated_at.toISOString(),
-    types: row.category_code === null ? null : {
-      categoryCode: row.category_code,
-      audienceCode: row.audience_code ?? "",
-      featureCode: row.feature_code,
-      decidedBy: row.decided_by === "model" ? "model" : "rules",
-      model: row.model,
-    },
-  }));
+export async function listPushes(options: { page?: number; pageSize?: number; date?: string } = {}): Promise<{
+  rows: PushRowView[]; page: number; pageSize: number; total: number;
+}> {
+  const page = Math.max(1, Math.trunc(options.page ?? 1));
+  const pageSize = Math.min(100, Math.max(1, Math.trunc(options.pageSize ?? 20)));
+  // Explicit offsets keep calendar days independent of the server/browser timezone.
+  const start = options.date ? beijingMidnight(options.date) : null;
+  const end = options.date ? beijingMidnight(addDays(options.date, 1)) : null;
+  const items = start ? sql`
+    SELECT e.snapshot || jsonb_build_object('eventId', e.id, 'operation', e.operation,
+        'canRepush', coalesce((${publishedTools()}), false)) AS snapshot,
+      0 AS priority, e.occurred_at AS sort_at, e.id AS event_id, e.article_id
+    FROM skillhub_push_events e LEFT JOIN articles a ON a.id = e.article_id
+    LEFT JOIN publications p ON p.article_id = a.id
+    WHERE e.occurred_at >= ${start} AND e.occurred_at < ${end!}
+    UNION ALL
+    SELECT ${legacySnapshot()} || jsonb_build_object('canRepush', coalesce((${publishedTools()}), false)),
+      0, sp.pushed_at, 0, a.id ${snapshotFrom()}
+    WHERE ${unrecordedLegacy()} AND sp.pushed_at >= ${start} AND sp.pushed_at < ${end!}`
+    : sql`SELECT ${pushSnapshot()} || jsonb_build_object('canRepush', coalesce((${publishedTools()}), false)) AS snapshot,
+      CASE coalesce(sp.status, 'pending') WHEN 'failed' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END AS priority,
+      coalesce(sp.updated_at, a.discovered_at) AS sort_at, 0 AS event_id, a.id AS article_id
+      ${snapshotFrom()} WHERE sp.article_id IS NOT NULL OR (${publishedTools()})`;
+  // One SQL snapshot for count and page, including empty/out-of-range pages.
+  const [result] = await sql<{ total: number; rows: PushRowView[] }[]>`
+    WITH items AS MATERIALIZED (${items}), page AS (
+      SELECT * FROM items ORDER BY priority, sort_at DESC, event_id DESC, article_id
+      LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
+    ) SELECT (SELECT count(*)::int FROM items) AS total,
+      coalesce((SELECT jsonb_agg(snapshot ORDER BY priority, sort_at DESC, event_id DESC, article_id) FROM page), '[]'::jsonb) AS rows`;
+  return { rows: result!.rows, total: result!.total, page, pageSize };
 }
 
 interface Attempt {
@@ -236,37 +249,49 @@ interface Attempt {
 
 /** Writes one attempt: counts it, stores the body sent, and fails the row once the limit is reached. */
 async function recordAttempt(articleId: string, attempt: Attempt): Promise<{ attempts: number; status: PushStatus }> {
-  await sql`INSERT INTO skillhub_pushes (article_id) VALUES (${articleId}) ON CONFLICT (article_id) DO NOTHING`;
-  const [row] = await sql<{ attempts: number; status: PushStatus }[]>`
-    UPDATE skillhub_pushes SET
-      attempts = attempts + 1,
-      status = CASE WHEN ${attempt.retryable === true} AND attempts + 1 >= ${MAX_ATTEMPTS} THEN 'failed' ELSE ${attempt.status} END,
-      remote_id = ${attempt.remoteId ?? null},
-      last_error = ${attempt.error},
-      payload = ${attempt.payload === undefined ? sql`payload` : sql.json(attempt.payload as never)},
-      pushed_at = CASE WHEN ${attempt.accepted === true} THEN now() ELSE pushed_at END,
-      updated_at = now()
-    WHERE article_id = ${articleId}
-    RETURNING attempts, status`;
-  return row!;
+  return sql.begin(async tx => {
+    await preserveLegacy(tx, [articleId]);
+    await tx`INSERT INTO skillhub_pushes (article_id) VALUES (${articleId}) ON CONFLICT (article_id) DO NOTHING`;
+    const [row] = await tx<{ attempts: number; status: PushStatus }[]>`
+      UPDATE skillhub_pushes SET
+        attempts = attempts + 1,
+        status = CASE WHEN ${attempt.retryable === true} AND attempts + 1 >= ${MAX_ATTEMPTS} THEN 'failed' ELSE ${attempt.status} END,
+        remote_id = ${attempt.remoteId ?? null},
+        last_error = ${attempt.error},
+        payload = ${attempt.payload === undefined ? tx`payload` : tx.json(attempt.payload as never)},
+        pushed_at = CASE WHEN ${attempt.accepted === true} THEN now() ELSE pushed_at END,
+        updated_at = now()
+      WHERE article_id = ${articleId}
+      RETURNING attempts, status`;
+    await appendEvent(tx, articleId, { operation: "create", status: attempt.accepted ? attempt.status : "failed", error: attempt.error, accepted: attempt.accepted });
+    return row!;
+  });
 }
 
 /** A refused session burns no attempt: the row is annotated, so it is swept again once the session is back. */
 async function recordBlocked(articleId: string, error: string): Promise<{ attempts: number; status: PushStatus }> {
-  await sql`INSERT INTO skillhub_pushes (article_id) VALUES (${articleId}) ON CONFLICT (article_id) DO NOTHING`;
-  const [row] = await sql<{ attempts: number; status: PushStatus }[]>`
-    UPDATE skillhub_pushes SET last_error = ${error}, updated_at = now()
-    WHERE article_id = ${articleId} RETURNING attempts, status`;
-  return row!;
+  return sql.begin(async tx => {
+    await preserveLegacy(tx, [articleId]);
+    await tx`INSERT INTO skillhub_pushes (article_id) VALUES (${articleId}) ON CONFLICT (article_id) DO NOTHING`;
+    const [row] = await tx<{ attempts: number; status: PushStatus }[]>`
+      UPDATE skillhub_pushes SET last_error = ${error}, updated_at = now()
+      WHERE article_id = ${articleId} RETURNING attempts, status`;
+    await appendEvent(tx, articleId, { operation: "create", status: "failed", error });
+    return row!;
+  });
 }
 
 /** A row the mapping cannot push is not a failure of the session: it is marked skipped once. */
 async function recordSkipped(articleId: string, problem: string): Promise<{ attempts: number; status: PushStatus }> {
-  const [row] = await sql<{ attempts: number; status: PushStatus }[]>`
-    INSERT INTO skillhub_pushes (article_id, status, last_error) VALUES (${articleId}, 'skipped', ${problem})
-    ON CONFLICT (article_id) DO UPDATE SET status = 'skipped', last_error = excluded.last_error, updated_at = now()
-    RETURNING attempts, status`;
-  return row!;
+  return sql.begin(async tx => {
+    await preserveLegacy(tx, [articleId]);
+    const [row] = await tx<{ attempts: number; status: PushStatus }[]>`
+      INSERT INTO skillhub_pushes (article_id, status, last_error) VALUES (${articleId}, 'skipped', ${problem})
+      ON CONFLICT (article_id) DO UPDATE SET status = 'skipped', last_error = excluded.last_error, updated_at = now()
+      RETURNING attempts, status`;
+    await appendEvent(tx, articleId, { operation: "create", status: "skipped", error: problem });
+    return row!;
+  });
 }
 
 export interface PushItem {
@@ -292,8 +317,9 @@ export interface PushSummary {
 const emptySummary = (): PushSummary => ({ attempted: 0, sent: 0, exists: 0, failed: 0, skipped: 0, stopped: false, error: null, items: [] });
 
 /** Pushes one batch, skipping the rows that fail and stopping only when the session itself is refused. */
-export async function pushCandidates(options: { limit?: number; retryFailed?: boolean; articleIds?: string[]; reclassify?: boolean; transport?: Transport } = {}): Promise<PushSummary> {
+export async function pushCandidates(options: { limit?: number; retryFailed?: boolean; articleIds?: string[]; reclassify?: boolean; repush?: boolean; transport?: Transport } = {}): Promise<PushSummary> {
   const summary = emptySummary();
+  if (options.articleIds?.length === 0 || (options.repush && !options.articleIds?.length)) return summary;
   const rows = await pendingToolRows(options);
   if (rows.length === 0) return summary;
 
@@ -302,6 +328,15 @@ export async function pushCandidates(options: { limit?: number; retryFailed?: bo
     summary.stopped = true;
     summary.error = opened.error;
     return summary;
+  }
+  if (options.repush) {
+    const ids = rows.map(row => row.articleId);
+    await sql.begin(async tx => {
+      await preserveLegacy(tx, ids);
+      await tx`UPDATE skillhub_pushes SET status = 'pending', attempts = 0,
+        remote_id = NULL, last_error = NULL, pushed_at = NULL, updated_at = now()
+        WHERE article_id = ANY(${ids}::text[])`;
+    });
   }
   const client: Skillhub = opened.skillhub;
   // The three codes come from the model (cached per article); a model that fails leaves the rules in
@@ -379,13 +414,21 @@ async function writeResult(articleId: string, tool: MappedTool, result: PushResu
 
 /** The tool is already in skillhub and its body was replaced: the row stays 'sent', only the copy is refreshed. */
 async function recordUpdated(articleId: string, payload: unknown): Promise<void> {
-  await sql`UPDATE skillhub_pushes SET last_error = NULL, payload = ${sql.json(payload as never)}, updated_at = now()
-    WHERE article_id = ${articleId}`;
+  await sql.begin(async tx => {
+    await preserveLegacy(tx, [articleId]);
+    await tx`UPDATE skillhub_pushes SET last_error = NULL, payload = ${tx.json(payload as never)}, updated_at = now()
+      WHERE article_id = ${articleId}`;
+    await appendEvent(tx, articleId, { operation: "update", status: "sent", error: null, accepted: true });
+  });
 }
 
 /** A refused update of a live tool: noted for the admin, and the row stays exactly as sent. */
 async function recordUpdateFailed(articleId: string, error: string): Promise<void> {
-  await sql`UPDATE skillhub_pushes SET last_error = ${error}, updated_at = now() WHERE article_id = ${articleId}`;
+  await sql.begin(async tx => {
+    await preserveLegacy(tx, [articleId]);
+    await tx`UPDATE skillhub_pushes SET last_error = ${error}, updated_at = now() WHERE article_id = ${articleId}`;
+    await appendEvent(tx, articleId, { operation: "update", status: "failed", error });
+  });
 }
 
 /** What one update batch came to. `failed` rows keep their 'sent' status: an old copy is not a lost tool. */
@@ -438,7 +481,11 @@ export async function updateSent(options: { limit?: number; articleIds?: string[
 
     const result = await client.updateTool(remoteId, payload.payload);
     if (result.kind === "config") {
-      // The session is gone: nothing local changes, the next run picks up where this one stopped.
+      // Preserve retry state while recording the refused operation in the history.
+      await sql.begin(async tx => {
+        await preserveLegacy(tx, [row.articleId]);
+        await appendEvent(tx, row.articleId, { operation: "update", status: "failed", error: result.error });
+      });
       summary.stopped = true;
       summary.error = result.error;
       break;
@@ -472,18 +519,22 @@ export async function resetFailed(): Promise<number> {
   return rows.length;
 }
 
-/** Puts one row back in the queue; null when no such row was ever pushed. */
+/** Puts an eligible row back in the queue without erasing its known push history. */
 export async function resetOne(articleId: string): Promise<boolean> {
-  await sql`INSERT INTO skillhub_pushes (article_id) VALUES (${articleId}) ON CONFLICT (article_id) DO NOTHING`;
-  const rows = await sql<{ article_id: string }[]>`
-    UPDATE skillhub_pushes SET status = 'pending', attempts = 0, updated_at = now()
-    WHERE article_id = ${articleId} RETURNING article_id`;
-  return rows.length > 0;
+  if (!(await toolRowsFor([articleId])).length) return false;
+  return sql.begin(async tx => {
+    await preserveLegacy(tx, [articleId]);
+    await tx`INSERT INTO skillhub_pushes (article_id) VALUES (${articleId}) ON CONFLICT (article_id) DO NOTHING`;
+    const rows = await tx<{ article_id: string }[]>`
+      UPDATE skillhub_pushes SET status = 'pending', attempts = 0, updated_at = now()
+      WHERE article_id = ${articleId} RETURNING article_id`;
+    return rows.length > 0;
+  });
 }
 
 /** A push (or a full re-send of what is already there) of one batch, on its own queue so the admin and the sweep share one worker path. */
 export interface PushJob {
-  mode?: "push" | "update";
+  mode?: "push" | "update" | "repush";
   limit?: number;
   articleIds?: string[];
   /** Ask the model again instead of using the cached codes (后台「用模型重分类并更新远端」, `--reclassify`). */
@@ -497,7 +548,7 @@ export const pushQueue = defineQueue<PushJob>({
   run: async (jobs) => {
     let last: PushSummary | UpdateSummary | null = null;
     for (const job of jobs) {
-      const options = { limit: job.limit, articleIds: job.articleIds, reclassify: job.reclassify };
+      const options = { limit: job.limit, articleIds: job.articleIds, reclassify: job.reclassify, repush: job.mode === "repush" };
       last = job.mode === "update" ? await updateSent(options) : await pushCandidates(options);
     }
     return last;
@@ -533,6 +584,28 @@ export async function enqueueArticles(articleIds: string[]): Promise<{ enqueued:
   if (ids.length === 0) return { enqueued: 0, pending: 0 };
   const jobId = await enqueueOn(pushQueue, { articleIds: ids, limit: ids.length });
   return { enqueued: jobId ? 1 : 0, pending: ids.length };
+}
+
+/** Re-create selected/all current candidates, including sent/exists rows. No PUT and no forced classification. */
+export async function enqueueRepush(scope: { all: true } | { articleIds: string[] }): Promise<{ enqueued: number; pending: number }> {
+  if (!("all" in scope) && !scope.articleIds.length) return { enqueued: 0, pending: 0 };
+  const only = "all" in scope ? sql`` : sql`AND a.id = ANY(${[...new Set(scope.articleIds)]}::text[])`;
+  const rows = await sql<{ article_id: string }[]>`SELECT a.id AS article_id ${fromTools()}
+    WHERE ${publishedTools()} ${only} ORDER BY a.discovered_at, a.id`;
+  if (!rows.length) return { enqueued: 0, pending: 0 };
+  const batch = randomUUID();
+  // The queue's short policy coalesces jobs by singleton key; distinct chunk keys must survive together.
+  return sql.begin(async tx => {
+    let enqueued = 0;
+    for (let offset = 0; offset < rows.length; offset += MAX_BATCH) {
+      const ids = rows.slice(offset, offset + MAX_BATCH).map(row => row.article_id);
+      const jobId = await enqueueOn(pushQueue, { mode: "repush", articleIds: ids, limit: ids.length },
+        { singletonKey: `repush:${batch}:${offset}` }, tx);
+      if (!jobId) throw new Error("重新推送任务未入队");
+      enqueued += 1;
+    }
+    return { enqueued, pending: rows.length };
+  });
 }
 
 /** Queues one article again after a manual retry. */

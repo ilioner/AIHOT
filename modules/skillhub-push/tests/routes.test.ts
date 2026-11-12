@@ -132,7 +132,9 @@ test("the overview includes tools without push records in both pending counts an
   assert.equal(response.statusCode, 200);
   const body = response.json();
   assert.equal(body.counts.pending, before.pending + 1);
-  const pending = body.rows.find((entry: { articleId: string }) => entry.articleId === id);
+  const items = await app.inject({ method: "GET", url: "/api/admin/skillhub/items", headers });
+  assert.equal(items.statusCode, 200);
+  const pending = items.json().rows.find((entry: { articleId: string }) => entry.articleId === id);
   assert.ok(pending, "new candidates must be visible before their first push");
   assert.equal(pending.status, "pending");
   assert.equal(pending.attempts, 0);
@@ -140,6 +142,74 @@ test("the overview includes tools without push records in both pending counts an
   assert.equal(pending.lastError, null);
   assert.equal(pending.pushedAt, null);
   assert.equal((await sql`SELECT 1 FROM skillhub_pushes WHERE article_id = ${id}`).length, 0);
+});
+
+test("classified counts use the current candidate scope and retain excluded historical caches", async () => {
+  const before = await overviewCounts();
+  const ids = await Promise.all([tool("当前模型分类"), tool("当前规则分类"), tool("当前未分类"), tool("下架的历史分类"), tool("教程历史分类"), tool("不合格历史分类")]);
+  for (const i of [0, 1, 3, 4, 5]) {
+    await sql`INSERT INTO skillhub_tool_types (article_id, category_code, audience_code, decided_by)
+      VALUES (${ids[i]!}, 'office-productivity', 'teacher-research', ${i === 1 ? 'rules' : 'model'})`;
+  }
+  await sql`UPDATE publications SET visibility = 'withdrawn' WHERE article_id = ${ids[3]!}`;
+  await sql`UPDATE articles SET raw = raw || ${sql.json({ contentKind: "tutorial" })} WHERE id = ${ids[4]!}`;
+  await sql`UPDATE publications SET eligible = false WHERE article_id = ${ids[5]!}`;
+  const headers = await adminHeaders();
+  const response = await app.inject({ method: "GET", url: "/api/admin/skillhub/overview", headers });
+  assert.equal(response.statusCode, 200);
+  const { counts } = response.json();
+  assert.equal(counts.candidates, before.candidates + 3);
+  assert.equal(counts.classified, before.classified + 2);
+  assert.equal(counts.byModel, before.byModel + 1);
+  assert.equal(counts.byRules, before.byRules + 1);
+  assert.equal(counts.unclassified, counts.candidates - counts.classified);
+  assert.equal(counts.classified, counts.byModel + counts.byRules);
+  assert.equal((await sql`SELECT 1 FROM skillhub_tool_types WHERE article_id = ANY(${ids}::text[])`).length, 5);
+});
+
+test("push records are paginated and day queries use Beijing midnight, not the server timezone", async () => {
+  assert.equal((await app.inject({ method: "GET", url: "/api/admin/skillhub/items" })).statusCode, 401);
+  const headers = await adminHeaders();
+  const ids = await Promise.all([tool("日期边界前"), tool("日期边界内"), tool("日期边界后")]);
+  for (const [i, time] of ["2026-11-08T15:59:59Z", "2026-11-08T16:00:00Z", "2026-11-09T16:00:00Z"].entries()) {
+    await sql`INSERT INTO skillhub_pushes (article_id, status, attempts, pushed_at) VALUES (${ids[i]!}, 'exists', 1, ${time})`;
+  }
+  await sql`UPDATE publications SET visibility = 'withdrawn' WHERE article_id = ${ids[1]!}`;
+  const day = await app.inject({ method: "GET", url: "/api/admin/skillhub/items?date=2026-11-09&pageSize=1", headers });
+  assert.equal(day.statusCode, 200);
+  assert.equal(day.json().total, 1);
+  assert.equal(day.json().rows[0].articleId, ids[1]);
+  assert.equal(day.json().rows[0].operation, "legacy");
+  assert.equal(day.json().rows[0].canRepush, false, "withdrawal does not erase history, but prevents re-push");
+  const empty = await app.inject({ method: "GET", url: "/api/admin/skillhub/items?date=2026-11-09&pageSize=1&page=2", headers });
+  assert.equal(empty.json().total, 1);
+  assert.deepEqual(empty.json().rows, []);
+  const pages = [];
+  for (const page of [1, 2]) pages.push((await app.inject({ method: "GET", url: `/api/admin/skillhub/items?pageSize=2&page=${page}`, headers })).json());
+  assert.equal(pages[0].total, pages[1].total);
+  assert.equal(new Set(pages.flatMap(p => p.rows.map((r: { articleId: string }) => r.articleId))).size, 4);
+  for (const query of ["page=0", "pageSize=101", "date=2026-02-30", "date=not-a-date"]) {
+    assert.equal((await app.inject({ method: "GET", url: `/api/admin/skillhub/items?${query}`, headers })).statusCode, 400);
+  }
+  assertNoSecrets(day.body);
+});
+
+test("batch recreation needs CSRF and an explicit nonempty scope, and excludes withdrawn IDs", async () => {
+  const headers = await adminHeaders();
+  const id = await tool("批量重推");
+  const withdrawn = await tool("不可重推");
+  await sql`UPDATE publications SET visibility = 'withdrawn' WHERE article_id = ${withdrawn}`;
+  assert.equal((await app.inject({ method: "POST", url: "/api/admin/skillhub/repush", headers: { cookie: headers.cookie }, payload: { all: true } })).statusCode, 403);
+  for (const payload of [{}, { articleIds: [] }, { all: false }, { all: true, articleIds: [id] }]) {
+    assert.equal((await app.inject({ method: "POST", url: "/api/admin/skillhub/repush", headers, payload })).statusCode, 400);
+  }
+  const result = await app.inject({ method: "POST", url: "/api/admin/skillhub/repush", headers, payload: { articleIds: [id, id, withdrawn, "missing-tool"] } });
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(result.json(), { enqueued: 1, pending: 1 });
+  const [job] = await sql`SELECT data FROM pgboss.job WHERE name = 'skillhub-push.push' AND data->>'mode' = 'repush' ORDER BY created_on DESC LIMIT 1`;
+  assert.deepEqual(job!.data.articleIds, [id]);
+  assert.equal(job!.data.reclassify, undefined, "recreation reuses classifications");
+  assertNoSecrets(result.body);
 });
 
 test("classifying on demand stores the answers, audits counts, and echoes no credential", async () => {

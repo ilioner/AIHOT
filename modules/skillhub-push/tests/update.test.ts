@@ -142,6 +142,10 @@ test("a refused update is recorded and the next tool is still updated", async ()
   assert.match(String((await state(broken))?.last_error), /500/);
   assert.equal((await state(fine))?.last_error, null);
   assert.equal((await state(fine))?.status, "sent");
+  const events = await sql`SELECT article_id, snapshot FROM skillhub_push_events
+    WHERE operation = 'update' AND article_id = ANY(${[missing, broken, fine]}::text[]) ORDER BY article_id`;
+  assert.deepEqual(events.map(row => row.snapshot.status), ["failed", "failed", "sent"]);
+  assert.equal(events[0]!.snapshot.pushedAt, null, "failed updates must not look accepted on that day");
 });
 
 test("a refused session stops the update batch and changes nothing locally", async () => {

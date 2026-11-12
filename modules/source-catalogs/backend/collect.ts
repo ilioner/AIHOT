@@ -2,9 +2,10 @@ import { sql } from "@aihot/backend/db";
 import { upsertMaterial } from "@aihot/backend/content/materials";
 import { queueProcessing } from "@aihot/backend/jobs/content";
 import { guardedFetch, requireOk, type GuardedFetchOptions, type GuardedResponse } from "@aihot/backend/lib/http-fetch";
-import { defineQueue } from "@aihot/backend/modules";
+import { defineQueue, emit } from "@aihot/backend/modules";
 import { enqueueOn } from "@aihot/backend/jobs/queue";
-import { endpoint, isCatalog, parseCatalog, SOURCE_IDS, type CatalogId } from "./adapters.ts";
+import { publishArticleTx } from "@aihot/backend/publication/publish";
+import { endpoint, isCatalog, parseCatalog, SOURCE_IDS, type CatalogId, type CatalogItem } from "./adapters.ts";
 
 type Reader = (url: string, options: GuardedFetchOptions) => Promise<GuardedResponse>;
 
@@ -33,6 +34,27 @@ export async function readCatalog(id: CatalogId, reader: Reader = guardedFetch) 
   return parseCatalog(id, response.text());
 }
 
+/** Re-reading a news pack can supply a full-text link omitted by the old adapter, without a new identity or analysis. */
+export async function storeCatalogItem(sourceId: CatalogId, item: CatalogItem) {
+  return sql.begin(async tx => {
+    const result = await upsertMaterial({ ...item, sourceId, via: "source-catalogs" }, tx);
+    if (sourceId === "catalog-uisdc" && item.sourceMetadata?.originalUrl === item.url && item.url !== "https://www.uisdc.com/news") {
+      const [changed] = await tx`UPDATE articles SET url = ${item.url},
+        raw = coalesce(raw, '{}'::jsonb) || ${tx.json({ originalUrl: item.url, independentUrl: true })}, updated_at = now()
+        WHERE id = ${result.articleId} AND source_id = ${sourceId} AND url = 'https://www.uisdc.com/news' RETURNING id`;
+      if (changed) {
+        const [previous] = await tx<{ story_id: number | null }[]>`SELECT story_id FROM publications WHERE article_id = ${result.articleId}`;
+        if (previous) {
+          const published = await publishArticleTx(tx, result.articleId);
+          if (published?.changed) await emit("articleChanged", { id: result.articleId, kind: published.changeKind,
+            reduced: published.reduced, reason: "catalog original link recovered", previousStoryIds: previous.story_id === null ? [] : [previous.story_id] }, tx);
+        }
+      }
+    }
+    return result;
+  });
+}
+
 export async function collectCatalog(sourceId: string, reader: Reader = guardedFetch): Promise<Record<string, unknown>> {
   if (!isCatalog(sourceId)) return { sourceId, status: "unmanaged" };
   const [source] = await sql<{ enabled: boolean; participation_mode: string }[]>`SELECT enabled, participation_mode FROM sources WHERE id = ${sourceId} AND kind = 'external'`;
@@ -44,7 +66,7 @@ export async function collectCatalog(sourceId: string, reader: Reader = guardedF
   try {
     const items = await readCatalog(sourceId, reader);
     for (const item of items) {
-      const result = await upsertMaterial({ ...item, sourceId, via: "source-catalogs" });
+      const result = await storeCatalogItem(sourceId, item);
       if (result.created) created += 1;
       if (result.revised) revised += 1;
       if (result.created || result.revised || result.processingNeeded) await queueProcessing(result.articleId);

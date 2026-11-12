@@ -11,7 +11,7 @@ import { SERVER_MODULES } from "@aihot/site/modules/server";
 import { closeDb, sql } from "@aihot/backend/db";
 import { stopBoss } from "@aihot/backend/jobs/queue";
 import { clearDictionaryCache } from "../backend/client.ts";
-import { MAX_ATTEMPTS, pendingToolRows, pushCandidates, resetFailed } from "../backend/push.ts";
+import { enqueueRepush, listPushes, MAX_ATTEMPTS, overviewCounts, pendingToolRows, pushCandidates, resetFailed } from "../backend/push.ts";
 
 const T = tag();
 const SOURCE = `skillhub-${T}`;
@@ -117,6 +117,35 @@ test("a created tool is marked sent with the remote id and the body that was sen
   assert.equal(row?.payload?.canonicalUrl, "https://tools.example/success");
   assert.equal(row?.payload?.iconUrl, "https://cdn.example/icon.png", "the media image stands in for a missing icon");
   assert.ok(sent.some((body) => body.name === `工具-成功-${T}`), "the request reached the create endpoint");
+});
+
+test("recreating a deleted remote tool keeps prior-day history and reuses cached classification", async () => {
+  const name = `历史重推-${T}`;
+  const id = await tool(name, "https://tools.example/recreate");
+  await sql`INSERT INTO skillhub_pushes (article_id, status, attempts, remote_id, pushed_at, payload)
+    VALUES (${id}, 'sent', 3, 999, '2026-01-01T15:59:59Z', ${sql.json({ name: "旧名称" })})`;
+  await sql`INSERT INTO skillhub_tool_types (article_id, category_code, audience_code, decided_by)
+    VALUES (${id}, 'office-productivity', 'teacher-research', 'rules')`;
+  const [classification] = await sql`SELECT * FROM skillhub_tool_types WHERE article_id = ${id}`;
+  assert.equal((await listPushes({ date: "2026-01-01" })).rows.find(r => r.articleId === id)?.title, "旧名称");
+  const first = await pushCandidates({ articleIds: [id], repush: true });
+  assert.equal(first.sent, 1);
+  assert.equal((await state(id))?.attempts, 1, "explicit recreation starts a fresh attempt budget");
+  assert.equal((await listPushes({ date: "2026-01-01" })).rows.find(r => r.articleId === id)?.title, "旧名称");
+  assert.deepEqual((await sql`SELECT * FROM skillhub_tool_types WHERE article_id = ${id}`)[0], classification);
+  answers.set(name, "exists");
+  assert.equal((await pushCandidates({ articleIds: [id], repush: true })).exists, 1);
+  const history = await sql`SELECT operation, snapshot FROM skillhub_push_events WHERE article_id = ${id} ORDER BY id`;
+  assert.deepEqual(history.map(r => r.operation), ["legacy", "create", "create"]);
+  assert.deepEqual(history.map(r => r.snapshot.status), ["sent", "sent", "exists"]);
+  assert.equal(history[0]!.snapshot.title, "旧名称");
+  assert.equal((await state(id))?.remote_id, null, "exists never retains a deleted old remote ID");
+  assert.equal(sent.filter(r => r.name === name).length, 2);
+  const before = sent.length;
+  assert.equal((await pushCandidates({ articleIds: [], repush: true })).attempted, 0);
+  await sql`UPDATE publications SET visibility = 'withdrawn' WHERE article_id = ${id}`;
+  assert.equal((await pushCandidates({ articleIds: [id], repush: true })).attempted, 0);
+  assert.equal(sent.length, before);
 });
 
 test("a 400 saying the slug or address already exists counts as done", async () => {
@@ -225,6 +254,21 @@ test("a row that keeps failing stops at the attempt limit and leaves the sweep a
   const retried = await pushCandidates({ articleIds: [id] });
   assert.equal(retried.sent, 1);
   assert.equal((await state(id))?.status, "sent");
+});
+
+test("all-candidate recreation queues more than 500 without losing chunks or sending in the request", async () => {
+  for (let n = 0; n < 501; n += 1) await tool(`全量-${n}`, `https://tools.example/bulk/${n}`);
+  const { candidates } = await overviewCounts();
+  const before = sent.length;
+  const result = await enqueueRepush({ all: true });
+  assert.equal(result.pending, candidates);
+  assert.equal(result.enqueued, Math.ceil(candidates / 500));
+  const jobs = await sql`SELECT data FROM pgboss.job WHERE name = 'skillhub-push.push' AND data->>'mode' = 'repush'`;
+  const ids = jobs.flatMap(r => r.data.articleIds as string[]);
+  assert.equal(new Set(ids).size, candidates);
+  assert.equal(ids.length, candidates);
+  assert.ok(jobs.every(r => r.data.articleIds.length <= 500));
+  assert.equal(sent.length, before, "only the worker performs network calls");
 });
 
 test("a run of retryable failures stops the batch instead of spending a timeout on every row", async () => {

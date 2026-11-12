@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { sql, closeDb } from "@aihot/backend/db";
-import { stopBoss } from "@aihot/backend/jobs/queue";
+import { getBoss, stopBoss } from "@aihot/backend/jobs/queue";
 import { parseCatalog, SOURCE_IDS } from "../backend/adapters.ts";
 import { collectCatalog, collectQueue, readCatalog, scheduleCollect } from "../backend/collect.ts";
 import { installModules } from "@aihot/backend/modules";
@@ -9,6 +9,8 @@ import { fetchNow } from "@aihot/backend/admin/sources";
 import module from "../server.ts";
 import { processArticle, queueProcessing } from "@aihot/backend/jobs/content";
 import { setVisibility } from "@aihot/backend/admin/content";
+import { upsertMaterial } from "@aihot/backend/content/materials";
+import { publishArticle } from "@aihot/backend/publication/publish";
 
 const teacher = { code: 0, data: { id: 44, name: "教师的AI辅助", sites: [
   { id: 1, name: "工具甲", tool_name: "制作课件", des: "把文档转成课件", url: "https://tools.example/one" },
@@ -29,12 +31,62 @@ test("daily packs expand every item, inherit time, and keep identities on reorde
   assert.equal(forward.length, 2);
   assert.notEqual(forward[0]!.identityKey, forward[1]!.identityKey);
   assert.equal(forward[0]!.identityKey, reversed[1]!.identityKey);
-  assert.equal(forward[0]!.url, "https://www.uisdc.com/news");
+  assert.equal(forward[0]!.url, "https://original.example/news");
+  assert.equal(forward[0]!.sourceMetadata!.itemUrl, "https://original.example/news");
   assert.equal(forward[0]!.publishedAt?.getTime(), 1793836800000);
-  assert.equal((forward[0]!.raw as any).independentUrl, false);
+  assert.equal((forward[0]!.raw as any).independentUrl, true);
+  assert.equal(forward[1]!.url, "https://www.uisdc.com/news");
+  assert.equal((forward[1]!.raw as any).independentUrl, false);
+  assert.equal(forward[0]!.identityKey, parse([{ ...items[0], content: "无全文链接" }])[0]!.identityKey);
+  assert.equal(parse([{ ...items[0], url: "https://publisher.example/story" }])[0]!.url, "https://publisher.example/story");
+  assert.equal(parse([{ title: "无原文", content: "[[体验:https://tool.example/]][[全文:javascript:alert(1)]]" }])[0]!.url, "https://www.uisdc.com/news");
   assert.equal(forward[0]!.sourceMetadata!.originalUrl, "https://original.example/news");
   assert.deepEqual(forward[0]!.sourceMetadata!.tags, ["产品更新"]);
   assert.equal(forward[0]!.media!.length, 1);
+});
+
+test("news recollection replaces a catalog fallback without changing identity, analysis, time or withdrawal", async () => {
+  const homepage = "https://www.uisdc.com/news";
+  const data = { data: [{ id: 78, time: Math.floor(Date.now() / 1000) - 60, dubao: [
+    { title: "公开新闻", content: "具体方法[[全文:https://original.example/public]]" },
+    { title: "下架新闻", content: "具体方法[[全文:https://original.example/withdrawn]]" },
+  ] }] };
+  const ids: string[] = [];
+  for (const item of parseCatalog("catalog-uisdc", JSON.stringify(data))) {
+    const { articleId } = await upsertMaterial({ ...item, sourceId: "catalog-uisdc", via: "source-catalogs", url: homepage,
+      sourceMetadata: { ...item.sourceMetadata!, itemUrl: homepage }, raw: { ...item.raw as object, independentUrl: false } });
+    ids.push(articleId);
+    await sql`INSERT INTO analyses (article_id,input_revision,origin,relevance,category,title_zh,summary_zh,selected)
+      VALUES (${articleId},1,'rule','pass','tip',${item.title},'具体方法',false)`;
+    await publishArticle(articleId, { releasedAt: new Date(Date.now() - 60_000) });
+  }
+  await setVisibility(ids[1]!, { visibility: "withdrawn", reason: "保留人工下架", version: 0 }, "test");
+  const snapshot = async () => ({
+    articles: await sql`SELECT id,identity_key,revision,content_hash,discovered_at,timeline_at,published_at,processing_state FROM articles WHERE id IN ${sql(ids)} ORDER BY id`,
+    analyses: await sql`SELECT * FROM analyses WHERE article_id IN ${sql(ids)} ORDER BY id`,
+    receipts: await sql`SELECT * FROM receipts ORDER BY id`,
+    jobs: await sql`SELECT id FROM pgboss.job WHERE data->>'articleId' IN ${sql(ids)} ORDER BY id`,
+  });
+  await getBoss();
+  const before = await snapshot();
+  const result = await collectCatalog("catalog-uisdc", response(data));
+  assert.equal(result.status, "ok");
+  assert.equal(result.created, 0);
+  assert.equal(result.revised, 0);
+  assert.deepEqual(await snapshot(), before);
+  for (const [index, id] of ids.entries()) {
+    const [row] = await sql`SELECT a.url,a.raw,p.url AS published_url,p.visibility FROM articles a JOIN publications p ON p.article_id=a.id WHERE a.id=${id}`;
+    const expected = index === 0 ? "https://original.example/public" : "https://original.example/withdrawn";
+    assert.equal(row!.url, expected);
+    assert.equal(row!.published_url, expected);
+    assert.equal(row!.raw.sourceMetadata.itemUrl, expected);
+    assert.equal(row!.raw.independentUrl, true);
+    assert.equal(row!.visibility, index === 0 ? "public" : "withdrawn");
+  }
+  const publications = await sql`SELECT * FROM publications WHERE article_id IN ${sql(ids)} ORDER BY article_id`;
+  await collectCatalog("catalog-uisdc", response(data));
+  assert.deepEqual(await sql`SELECT * FROM publications WHERE article_id IN ${sql(ids)} ORDER BY article_id`, publications);
+  assert.deepEqual(await snapshot(), before);
 });
 
 test("hash topics stay separate and overlapping products converge across topics", () => {
