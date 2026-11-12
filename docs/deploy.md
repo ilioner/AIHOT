@@ -460,3 +460,13 @@ cd apps/web && NODE_ENV=production node --env-file=../../.env server.ts   # 网�
 三个进程要一直运行，生产环境用 systemd 或 pm2 守护（守护配置里同样设 `NODE_ENV=production`）。停止 worker 时给它 515 秒（systemd 的 `TimeoutStopSec=515`、pm2 的 `kill_timeout: 515000` 和 `treekill: false`），覆盖队列的 470 秒排空和数据库清理；systemd 还需设 `KillMode=mixed`，只先通知主进程停止接任务，让正在备份的 `pg_dump`、`tar` 自然完成。被提前杀掉的调用结果不明，要等至少半小时自动放行后才会重试。
 
 开发时用带热更新的方式：`npm run dev:api`、`npm run dev:worker`、`npm run dev:web`。开发时想免登录进后台，在 `.env` 里设 `DEV_AUTH_ROLE=admin`（生产环境会拒绝启动）。
+
+### 一台新服务器上直接装（脚本）
+
+`scripts/deploy.sh` 把上面的流程打包成一条命令：同步代码、装 Node、`npm ci`、跑迁移和种子、建前端、写 systemd 单元和 nginx 配置、启动并自检。重复执行就是更新。数据库用 `.env` 里 `DATABASE_URL` 指向的那个，脚本不会在服务器上装 PostgreSQL。
+
+```bash
+DEPLOY_HOST=1.2.3.4 SSH_KEY=~/.ssh/id_ed25519 ./scripts/deploy.sh
+```
+
+第一次执行会从本机 `.env` 生成服务器上的 `.env`（`DATABASE_URL`、`LLM_*` 等沿用，`SITE_URL`、`API_BASE_URL`、端口和 `TRUST_PROXY` 由脚本接管），之后一律保留服务器上那份，想覆盖用 `FORCE_ENV=1`，会先备份成 `.env.bak.<时间>`。可调的环境变量：`WEB_PORT`（默认 13000）、`API_PORT`（3001，只监听本机）、`REMOTE_DIR`（`/var/www/aihot`）、`APP_USER`（`aihot`）、`NODE_VERSION`（24.22.3，装到 `/opt/node24`，不动系统 Node）、`SKIP_NGINX=1`（不写 nginx）、`DRY_RUN=1`（只打印要做什么）。服务由 `aihot-api`、`aihot-worker`、`aihot-web` 三个 systemd 单元守护，日志看 `journalctl -u aihot-worker -f`。
